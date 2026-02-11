@@ -37,6 +37,7 @@
 #endif
 
 #include "Zigbee.h"
+#include "esp_zigbee_core.h"
 
 #ifdef ZIGBEE_MODE_ZCZR
 zigbee_role_t role = ZIGBEE_ROUTER;  // or can be ZIGBEE_COORDINATOR, but it won't scan itself
@@ -53,7 +54,7 @@ namespace ZIGBEE {
     ZigbeeSwitch zbSwitch = ZigbeeSwitch(5);
 
     void init() {
-        LOG("[ZIGBEE] Initializing Zigbee stack");
+        LOG("[ZIGBEE] Initializing Zigbee stack as %s...", role == ZIGBEE_COORDINATOR ? "COORDINATOR" : (role == ZIGBEE_ROUTER ? "ROUTER" : "END DEVICE"));
         zbSwitch.setManufacturerAndModel(DEFAULT_HOSTNAME, "zigbee-switch");
         zbSwitch.allowMultipleBinding(true);
         Zigbee.addEndpoint(&zbSwitch);
@@ -83,12 +84,10 @@ namespace ZIGBEE {
         if(scan_in_progress) {
             int16_t zigbee_scan_status = Zigbee.scanComplete();
             if (zigbee_scan_status < 0) {
-                LOG("[ZIGBEE] Scan failed with error code: %d", zigbee_scan_status);
-                scan_in_progress = false;
-                return;
-            } else if (zigbee_scan_status == 0) {
-                // Scan still in progress
-                return;
+                if(zigbee_scan_status == ZB_SCAN_FAILED){
+                    LOG("[ZIGBEE] Scan failed with error code: %d", zigbee_scan_status);
+                    scan_in_progress = false;
+                }
             } else {
                 scan_in_progress = false;
                 zigbee_scan_result_t *scan_result = Zigbee.getScanResult();
@@ -99,8 +98,8 @@ namespace ZIGBEE {
                         i + 1,
                         scan_result[i].short_pan_id,
                         scan_result[i].logic_channel,
-                        scan_result[i].permit_joining ? "Yes" : "No",
-                        scan_result[i].router_capacity ? "Yes" : "No",
+                        scan_result[i].permit_joining      ? "Yes" : "No",
+                        scan_result[i].router_capacity     ? "Yes" : "No",
                         scan_result[i].end_device_capacity ? "Yes" : "No"
                     );
                 }
@@ -116,34 +115,10 @@ namespace ZIGBEE {
 
     void scan_eps() {
         LOG("[ZIGBEE] Scanning for Zigbee devices...");
-        Zigbee.scanNetworks();
+        Zigbee.scanNetworks(ESP_ZB_TRANSCEIVER_ALL_CHANNELS_MASK, 5);
         scan_in_progress = true;
     }
 
-    // This function runs whenever the Sonoff sends an update
-    void zb_attribute_reporting_cb(esp_zb_zcl_report_attr_message_t *message) {
-        // 1. Check the Cluster (0x0201 = Thermostat)
-        if (message->cluster == 0x0201) { 
-
-            // 2. Check the Attribute ID (0x0000 = Local Temperature)
-            // Note: we use .id here
-            if (message->attribute.id == 0x0000) { 
-
-                // 3. Access the data value
-                // In 3.3.6, the data is usually in message->attribute.data.value
-                if (message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_S16) {
-                    int16_t raw_temp = *(int16_t *)message->attribute.data.value;
-                    // Sonoff sends 2150 for 21.5°C
-                    currentTemp = raw_temp / 100.0;
-                    LOG("[ZIGBEE] Received current temperature: %0.2f°C", currentTemp);
-
-                    // Update your global variable for the I2C bus
-                    // (Using int8_t as we discussed for simple I2C transfer)
-                    // global_temp = (int8_t)(raw_temp / 100); 
-                }
-            }
-        }
-    }
 }
 
 namespace PLUGINS {
@@ -177,6 +152,26 @@ namespace PLUGINS {
             }
             return response;
         }
+        // AT+ZBJOIN=<timeout_sec> - Enable/disable permit joining
+        else if (p = COMMON::at_cmd_check("AT+ZBJOIN=", at_cmd, cmd_len)) {
+            // For coordinators/routers, "scan" means enabling permit joining
+            // to allow new devices to join the network
+            int timeout_sec = 0;
+            if (sscanf(p, "%d", &timeout_sec) >= 1) {
+                if (timeout_sec > 0) {
+                    LOG("[ZIGBEE] Enabling permit joining for %d seconds", timeout_sec);
+                    Zigbee.openNetwork(timeout_sec);
+                    snprintf(response, sizeof(response), "+ZBJOIN:permit_join_enabled,%d\r\nOK", timeout_sec);
+                } else {
+                    LOG("[ZIGBEE] Disabling permit joining");
+                    Zigbee.closeNetwork();
+                    snprintf(response, sizeof(response), "+ZBJOIN:permit_join_disabled\r\nOK");
+                }
+                return response;
+            }
+            return AT_R("ERROR:INVALID_PARAM");
+        }
+        // AT+ZBSCAN? - Query scan status
         else if (p = COMMON::at_cmd_check("AT+ZBSCAN=", at_cmd, cmd_len)) {
             if (strcmp(p, "1") == 0) {
                 ZIGBEE::scan_eps();
@@ -184,7 +179,7 @@ namespace PLUGINS {
             } else if (strcmp(p, "0") == 0) {
                 return AT_R("ERROR:NOT_IMPLEMENTED");
             }
-            return AT_R("OK");
+            return AT_R("ERROR:INVALID_PARAM");
         }
         // AT+ZBPAIR? - Query pairing mode status
         else if (p = COMMON::at_cmd_check("AT+ZBPAIR?", at_cmd, cmd_len)) {
