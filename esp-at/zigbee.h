@@ -39,9 +39,18 @@
 #define LOOP_DELAY
 
 #undef SUPPORT_BLE_UART1
+#undef SUPPORT_UART1
 #undef LOGUART
 #undef TIMELOG
 #undef SUPPORT_GPIO
+
+#include "sdkconfig.h"
+
+#if defined(CONFIG_ESP32_WIFI_SUPPORT) || defined(CONFIG_ESP8266_WIFI_SUPPORT)
+#if not defined(SUPPORT_WIFI) && SUPPORT_WIFI != 0
+#define SUPPORT_WIFI
+#endif // SUPPORT_WIFI
+#endif // CONFIG_ESP32_WIFI_SUPPORT || CONFIG_ESP8266_WIFI_SUPPORT
 
 #ifndef DEFAULT_HOSTNAME
 #define DEFAULT_HOSTNAME "zigbee"
