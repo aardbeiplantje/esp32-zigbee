@@ -127,34 +127,7 @@ namespace ZIGBEE {
         LOG("[ZIGBEE] Scanning for Zigbee networks...");
         Zigbee.scanNetworks(ESP_ZB_TRANSCEIVER_ALL_CHANNELS_MASK, 5);
         scan_in_progress = true;
-
-        // Coordinators/routers: list devices bound to our network
-        LOG("[ZIGBEE] Listing devices bound to this network...");
-        std::list<zb_device_params_t *> eps = zbSwitch.getBoundDevices();
-        LOG("[ZIGBEE] Found %d bound devices", eps.size());
-        int i = 1;
-        for (const auto &ep : eps) {
-            LOG("[ZIGBEE] Device %d: IEEE=0x%016llX, Short=0x%04X, Endpoint=%d", 
-                i++, ep->ieee_addr, ep->short_addr, ep->endpoint);
-
-            // Try to read Basic cluster attributes for device info
-            // Cluster 0x0000 (Basic), Attribute 0x0004 (Manufacturer Name)
-            esp_zb_zcl_read_attr_cmd_t read_req;
-            read_req.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
-            read_req.zcl_basic_cmd.dst_addr_u.addr_short = ep->short_addr;
-            read_req.zcl_basic_cmd.dst_endpoint = ep->endpoint;
-            read_req.zcl_basic_cmd.src_endpoint = zbSwitch.getEndpoint();
-            read_req.clusterID = 0x0000; // Basic cluster
-
-            LOG("[ZIGBEE] Requesting manufacturer name from device...");
-            esp_zb_zcl_read_attr_cmd_req(&read_req);
-
-            // Also request model identifier (0x0005)
-            LOG("[ZIGBEE] Requesting model identifier from device...");
-            esp_zb_zcl_read_attr_cmd_req(&read_req);
-        }
     }
-
 }
 
 namespace PLUGINS {
@@ -175,16 +148,42 @@ namespace PLUGINS {
 
         // AT+ZBLIST? - List all paired Zigbee devices
         if (p = COMMON::at_cmd_check("AT+ZBLIST?", at_cmd, cmd_len)) {
-            // Query list of paired devices
-            std::list<zb_device_params_t *> eps = ZIGBEE::get_bound_eps();
-            // Format response with device info
             size_t offset = 0;
+            // Query list of paired devices
+            LOG("[ZIGBEE] Listing devices bound to this network...");
+            std::list<zb_device_params_t *> eps = ZIGBEE::get_bound_eps();
+            // Coordinators/routers: list devices bound to our network
+            LOG("[ZIGBEE] Found %d bound devices", eps.size());
+            int i = 1;
             for (const auto &ep : eps) {
+                LOG("[ZIGBEE] Device %d: IEEE=0x%016llX, Short=0x%04X, Endpoint=%d", 
+                    i++, ep->ieee_addr, ep->short_addr, ep->endpoint);
+
+                // Try to read Basic cluster attributes for device info
+                // Cluster 0x0000 (Basic), Attribute 0x0004 (Manufacturer Name)
+                esp_zb_zcl_read_attr_cmd_t read_req;
+                read_req.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
+                read_req.zcl_basic_cmd.dst_addr_u.addr_short = ep->short_addr;
+                read_req.zcl_basic_cmd.dst_endpoint = ep->endpoint;
+                read_req.zcl_basic_cmd.src_endpoint = ZIGBEE::zbSwitch.getEndpoint();
+                read_req.clusterID = 0x0000; // Basic cluster
+
+                LOG("[ZIGBEE] Requesting manufacturer name from device...");
+                esp_zb_zcl_read_attr_cmd_req(&read_req);
+
+                // Also request model identifier (0x0005)
+                LOG("[ZIGBEE] Requesting model identifier from device...");
+                esp_zb_zcl_read_attr_cmd_req(&read_req);
+
+                // Append device info to response string
                 offset += snprintf(response + offset, sizeof(response) - offset,
                     "+ZBLIST:IEEE=0x%016llX,Endpoint=%d\r\n", ep->ieee_addr, ep->endpoint);
                 if (offset >= sizeof(response)) {
                     break; // Prevent buffer overflow
                 }
+            }
+            if(eps.size() == 0) {
+                snprintf(response, sizeof(response), "+ZBLIST:No devices found\r\n");
             }
             return response;
         }
