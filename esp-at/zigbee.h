@@ -38,6 +38,7 @@
 #define BLUETOOTH_UART_AT
 #define LOOP_DELAY
 
+#undef SUPPORT_BLE_UART1
 #undef LOGUART
 #undef TIMELOG
 #undef SUPPORT_GPIO
