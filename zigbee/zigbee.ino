@@ -51,13 +51,13 @@ namespace ZIGBEE {
     // Global variables to store valve data for I2C requests
     RTC_DATA_ATTR float currentTemp = 0;
     RTC_DATA_ATTR bool scan_in_progress = false;
-    ZigbeeSwitch zbSwitch = ZigbeeSwitch(5);
+    ZigbeeGateway zbGw = ZigbeeGateway(5);  // Endpoint 5 for switch
 
     void init() {
         LOG("[ZIGBEE] Initializing Zigbee stack as %s...", role == ZIGBEE_COORDINATOR ? "COORDINATOR" : (role == ZIGBEE_ROUTER ? "ROUTER" : "END DEVICE"));
-        zbSwitch.setManufacturerAndModel(DEFAULT_HOSTNAME, "zigbee-switch");
-        zbSwitch.allowMultipleBinding(true);
-        Zigbee.addEndpoint(&zbSwitch);
+        zbGw.setManufacturerAndModel(DEFAULT_HOSTNAME, "zigbee-switch");
+        zbGw.allowMultipleBinding(true);
+        Zigbee.addEndpoint(&zbGw);
         Zigbee.setRebootOpenNetwork(180);
         if(!Zigbee.begin(role)) {
             LOG("[ZIGBEE] Failed to initialize Zigbee stack");
@@ -119,7 +119,7 @@ namespace ZIGBEE {
     }
 
     std::list<zb_device_params_t *> get_bound_eps() {
-        return zbSwitch.getBoundDevices();
+        return zbGw.getBoundDevices();
     }
 
     void scan_eps() {
@@ -165,7 +165,7 @@ namespace PLUGINS {
                 read_req.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
                 read_req.zcl_basic_cmd.dst_addr_u.addr_short = ep->short_addr;
                 read_req.zcl_basic_cmd.dst_endpoint = ep->endpoint;
-                read_req.zcl_basic_cmd.src_endpoint = ZIGBEE::zbSwitch.getEndpoint();
+                read_req.zcl_basic_cmd.src_endpoint = ZIGBEE::zbGw.getEndpoint();
                 read_req.clusterID = 0x0000; // Basic cluster
 
                 LOG("[ZIGBEE] Requesting manufacturer name from device...");
