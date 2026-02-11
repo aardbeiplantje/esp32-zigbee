@@ -4268,6 +4268,25 @@ class MyServerCallbacks: public BLEServerCallbacks {
       }
 
       LOG("[BLE] Device connected, conn_handle: %d, MTU: %d", ble_conn_handle, ble_conn_handle != -1 ? pServer->getPeerMTU(ble_conn_handle) : 0);
+
+      // Update connection parameters to increase supervision timeout for large data transfers
+      // This prevents disconnections when sending lots of data
+      if(ble_conn_handle != -1) {
+        ble_gap_upd_params params;
+        params.itvl_min = BLE_GAP_INITIAL_CONN_ITVL_MIN;  // 7.5ms (units of 1.25ms)
+        params.itvl_max = BLE_GAP_INITIAL_CONN_ITVL_MAX;  // 4000ms (units of 1.25ms) 
+        params.latency = 0;                                // No slave latency
+        params.supervision_timeout = 500;                  // 5000ms (units of 10ms) - much longer timeout
+        params.min_ce_len = BLE_GAP_INITIAL_CONN_MIN_CE_LEN;
+        params.max_ce_len = BLE_GAP_INITIAL_CONN_MAX_CE_LEN;
+
+        int rc = ble_gap_update_params(ble_conn_handle, &params);
+        if(rc == 0) {
+          LOG("[BLE] Connection parameters updated for large data transfers (timeout: 5s)");
+        } else {
+          LOG("[BLE] Failed to update connection parameters: %d", rc);
+        }
+      }
     };
 
     void onDisconnect(BLEServer* pServer) {
@@ -4937,7 +4956,7 @@ uint8_t ble_send_n(const uint8_t *bstr, size_t len) {
           doYIELD;
           delayMicroseconds(100);
           nr_retries++;
-          if(nr_retries >= 5) {
+          if(nr_retries >= 10) {
             LOG("[BLE] notify failed, maximum retries reached for memory allocation");
             return 0;
           }
@@ -4946,14 +4965,22 @@ uint8_t ble_send_n(const uint8_t *bstr, size_t len) {
         D("[BLE] notifying: a:%d, l:%d, chunk:%d", snr, len, cs);
         esp_err_t err = ble_gatts_notify_custom(conn_handle, pTxCharacteristic->getHandle(), ble_out_msg);
         if(err != ESP_OK) {
-          D("[BLE] notify failed with error: a:%d, l:%d, c:%d, e:%d, %s", snr, inlen, cs, err, err == 6 ? "ENOMEM": "UNKNOWN");
+          D("[BLE] notify failed with error: a:%d, l:%d, c:%d, e:%d, %s", snr, len, cs, err, err == 6 ? "ENOMEM": "UNKNOWN");
 
           // destroy m_buf after use to avoid memory leak
           os_mbuf_free_chain(ble_out_msg);
           ble_out_msg = NULL;
 
-          // doYIELD for other things, we're in a GOTO loop
+          // Add delay before retry to allow BLE stack to recover
+          delayMicroseconds(500);
           doYIELD;
+
+          nr_retries++;
+          if(nr_retries >= 10) {
+            LOG("[BLE] notify failed, maximum retries reached for sending");
+            return 0;
+          }
+
           // after doYIELD, check if still connected and characteristic valid
           if(deviceConnected == 0) {
             LOG("[BLE] Stopped sending, not connected anymore while waiting to notify");
@@ -4972,7 +4999,13 @@ uint8_t ble_send_n(const uint8_t *bstr, size_t len) {
           D("[BLE] notify sent successfully: a:%d, l:%d, chunk:%d", snr, len, cs);
         }
 
-        // success, ble_out_msg is consumed, yield
+        // success, ble_out_msg is consumed
+        // Add small delay between successful notifications to prevent overwhelming the BLE stack
+        // This is critical for large data transfers
+        if(o + cs < len) {
+          // More data to send, add delay to pace notifications
+          delayMicroseconds(1000); // 1ms delay between chunks
+        }
         doYIELD;
       }
       ble_out_msg = NULL;
