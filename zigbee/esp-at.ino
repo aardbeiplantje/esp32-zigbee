@@ -4876,7 +4876,7 @@ uint8_t ble_send_n(const uint8_t *bstr, size_t len) {
       // Get connection handle - use cached value or fetch dynamically
       int16_t conn_handle = ble_conn_handle;
 
-      // If cached handle is 0, try to fetch it now (ESP32-H2 timing issue workaround)
+      // If no cached handle, try to fetch it now (ESP32-H2 timing issue workaround)
       if(conn_handle == -1 && pService && pService->getServer()) {
         D("[BLE] Cached handle is 0, attempting to fetch from server");
         for(auto &z: pService->getServer()->getPeerDevices(false)) {
