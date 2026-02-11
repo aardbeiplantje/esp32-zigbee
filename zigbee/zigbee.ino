@@ -31,16 +31,38 @@
 
 #include <zigbee.h>
 #include <common.h>
-#include <string.h>
 
-#include <Zigbee.h>
+#if !defined(ZIGBEE_MODE_ED) && !defined(ZIGBEE_MODE_ZCZR)
+#error "Zigbee device mode is not selected in Tools->Zigbee mode"
+#endif
+
+#include "Zigbee.h"
+
+#ifdef ZIGBEE_MODE_ZCZR
+zigbee_role_t role = ZIGBEE_ROUTER;  // or can be ZIGBEE_COORDINATOR, but it won't scan itself
+#else
+zigbee_role_t role = ZIGBEE_END_DEVICE;
+#endif
+
 
 namespace ZIGBEE {
     static uint32_t pairing_start_time = 0;
+    // Global variables to store valve data for I2C requests
+    RTC_DATA_ATTR float currentTemp = 0;
+    RTC_DATA_ATTR bool scan_in_progress = false;
+    ZigbeeSwitch zbSwitch = ZigbeeSwitch(5);
 
     void init() {
-        Zigbee.begin(ZIGBEE_COORDINATOR);
-        LOG("[ZIGBEE] coordinator initialized");
+        LOG("[ZIGBEE] Initializing Zigbee stack");
+        zbSwitch.setManufacturerAndModel(DEFAULT_HOSTNAME, "zigbee-switch");
+        zbSwitch.allowMultipleBinding(true);
+        Zigbee.addEndpoint(&zbSwitch);
+        Zigbee.setRebootOpenNetwork(180);
+        if(!Zigbee.begin(role)) {
+            LOG("[ZIGBEE] Failed to initialize Zigbee stack");
+            return;
+        }
+        LOG("[ZIGBEE] Zigbee stack initialized successfully");
     }
 
     void enable_pairing(uint32_t timeout_ms) {
@@ -51,6 +73,76 @@ namespace ZIGBEE {
     void disable_pairing() {
         LOG("[ZIGBEE] pairing disabled");
     }
+
+    void loop() {
+        // Check if pairing mode should be disabled after timeout
+        if (pairing_start_time > 0 && (millis() - pairing_start_time) > 60000) {
+            disable_pairing();
+            pairing_start_time = 0;
+        }
+        if(scan_in_progress) {
+            int16_t zigbee_scan_status = Zigbee.scanComplete();
+            if (zigbee_scan_status < 0) {
+                scan_in_progress = false;
+                return;
+            } else if (zigbee_scan_status == 0) {
+                // Scan still in progress
+                return;
+            } else {
+                scan_in_progress = false;
+                zigbee_scan_result_t *scan_result = Zigbee.getScanResult();
+                LOG("[ZIGBEE] Scan complete, found %d endpoints", zigbee_scan_status);
+                std::list<zb_device_params_t *> eps;
+                for (int i = 0; i < zigbee_scan_status; i++) {
+                    LOG("[ZIGBEE] Network %d: PAN ID=0x%04X, Channel=%d, Permit Joining=%s, Router Capacity=%s, End Device Capacity=%s",
+                        i + 1,
+                        scan_result[i].short_pan_id,
+                        scan_result[i].logic_channel,
+                        scan_result[i].permit_joining ? "Yes" : "No",
+                        scan_result[i].router_capacity ? "Yes" : "No",
+                        scan_result[i].end_device_capacity ? "Yes" : "No"
+                    );
+                }
+                Zigbee.scanDelete();
+            }
+        }
+        return;
+    }
+
+    std::list<zb_device_params_t *> get_bound_eps() {
+        return zbSwitch.getBoundDevices();
+    }
+
+    void scan_eps() {
+        LOG("[ZIGBEE] Scanning for Zigbee devices...");
+        Zigbee.scanNetworks();
+        scan_in_progress = true;
+    }
+
+    // This function runs whenever the Sonoff sends an update
+    void zb_attribute_reporting_cb(esp_zb_zcl_report_attr_message_t *message) {
+        // 1. Check the Cluster (0x0201 = Thermostat)
+        if (message->cluster == 0x0201) { 
+
+            // 2. Check the Attribute ID (0x0000 = Local Temperature)
+            // Note: we use .id here
+            if (message->attribute.id == 0x0000) { 
+
+                // 3. Access the data value
+                // In 3.3.6, the data is usually in message->attribute.data.value
+                if (message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_S16) {
+                    int16_t raw_temp = *(int16_t *)message->attribute.data.value;
+                    // Sonoff sends 2150 for 21.5°C
+                    currentTemp = raw_temp / 100.0;
+                    LOG("[ZIGBEE] Received current temperature: %0.2f°C", currentTemp);
+
+                    // Update your global variable for the I2C bus
+                    // (Using int8_t as we discussed for simple I2C transfer)
+                    // global_temp = (int8_t)(raw_temp / 100); 
+                }
+            }
+        }
+    }
 }
 
 namespace PLUGINS {
@@ -58,8 +150,8 @@ namespace PLUGINS {
         ZIGBEE::init();
     }
 
-    void setup() {
-        // Additional setup if needed
+    void loop_pre() {
+        ZIGBEE::loop();
     }
 
     const char * at_cmd_handler(const char *at_cmd) {
@@ -72,8 +164,26 @@ namespace PLUGINS {
         // AT+ZBLIST? - List all paired Zigbee devices
         if (p = COMMON::at_cmd_check("AT+ZBLIST?", at_cmd, cmd_len)) {
             // Query list of paired devices
-            // TODO: Implement actual device retrieval from Zigbee stack
-            return AT_R("ERROR:NOT_IMPLEMENTED");
+            std::list<zb_device_params_t *> eps = ZIGBEE::get_bound_eps();
+            // Format response with device info
+            size_t offset = 0;
+            for (const auto &ep : eps) {
+                offset += snprintf(response + offset, sizeof(response) - offset,
+                    "+ZBLIST:IEEE=0x%016llX,Endpoint=%d\r\n", ep->ieee_addr, ep->endpoint);
+                if (offset >= sizeof(response)) {
+                    break; // Prevent buffer overflow
+                }
+            }
+            return response;
+        }
+        else if (p = COMMON::at_cmd_check("AT+ZBSCAN=", at_cmd, cmd_len)) {
+            if (strcmp(p, "1") == 0) {
+                ZIGBEE::scan_eps();
+                return AT_R("OK");
+            } else if (strcmp(p, "0") == 0) {
+                return AT_R("ERROR:NOT_IMPLEMENTED");
+            }
+            return AT_R("OK");
         }
         // AT+ZBPAIR? - Query pairing mode status
         else if (p = COMMON::at_cmd_check("AT+ZBPAIR?", at_cmd, cmd_len)) {

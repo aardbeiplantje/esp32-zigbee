@@ -32,6 +32,10 @@
 #ifndef _ZIGBEE_H
 #define _ZIGBEE_H
 
+#if !defined(ZIGBEE_MODE_ED) && !defined(ZIGBEE_MODE_ZCZR)
+#error "Zigbee device mode is not selected in Tools->Zigbee mode"
+#endif
+
 #define SUPPORT_PLUGINS
 #define SUPPORT_ESP_LOG_INFO
 #define UART_AT
@@ -43,6 +47,8 @@
 #undef LOGUART
 #undef TIMELOG
 #undef SUPPORT_GPIO
+
+#include "common.h"
 
 #include "sdkconfig.h"
 
@@ -56,20 +62,25 @@
 #define DEFAULT_HOSTNAME "zigbee"
 #endif
 
+#include <Zigbee.h>
+#include <string.h>
+#include <vector>
+#include <cstdint>
+
 namespace PLUGINS {
     // Zigbee plugin API implementation
     void initialize();
-    void setup();
+    void loop_pre();
     const char * at_cmd_handler(const char *at_cmd);
     const char * at_get_help_string();
 }
 
 namespace ZIGBEE {
-
-    // Core functions
     void init();
     void enable_pairing(uint32_t timeout_ms = 60000);
     void disable_pairing();
+    std::list<zb_device_params_t *> get_bound_eps();
+    void scan_eps();
 }
 
 #endif // _ZIGBEE_H
