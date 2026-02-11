@@ -32,10 +32,58 @@
 #ifndef _ZIGBEE_H
 #define _ZIGBEE_H
 
+#define SUPPORT_PLUGINS
+#define SUPPORT_ESP_LOG_INFO
+#define UART_AT
+#define BLUETOOTH_UART_AT
+#define LOOP_DELAY
+
+#undef LOGUART
+#undef TIMELOG
+#undef SUPPORT_GPIO
+
+#ifndef DEFAULT_HOSTNAME
+#define DEFAULT_HOSTNAME "zigbee"
+#endif
+
+#include <vector>
+#include <cstdint>
+
 namespace PLUGINS {
+    // Zigbee plugin API implementation
+    void initialize();
+    void setup();
+    const char * at_cmd_handler(const char *at_cmd);
+    const char * at_get_help_string();
 }
 
 namespace ZIGBEE {
+    // Zigbee device structure
+    struct Device {
+        uint64_t ieee_addr;     // IEEE address (64-bit)
+        uint16_t short_addr;    // Short address (16-bit)
+        uint8_t endpoint;       // Endpoint
+        bool online;            // Device status
+        char name[32];          // Device name/identifier
+    };
+
+    // Zigbee coordinator state
+    struct CoordinatorState {
+        bool initialized;
+        bool pairing_enabled;
+        uint32_t pairing_timeout;
+        std::vector<Device> devices;
+    };
+
+    // Core functions
+    void init();
+    void enable_pairing(uint32_t timeout_ms = 60000);
+    void disable_pairing();
+    bool is_pairing_enabled();
+    const std::vector<Device>& get_devices();
+    bool add_device(const Device& dev);
+    bool remove_device(uint64_t ieee_addr);
+    Device* find_device(uint64_t ieee_addr);
 }
 
 #endif // _ZIGBEE_H
