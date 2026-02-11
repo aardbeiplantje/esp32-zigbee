@@ -40,7 +40,7 @@
 #include "esp_zigbee_core.h"
 
 #ifdef ZIGBEE_MODE_ZCZR
-zigbee_role_t role = ZIGBEE_ROUTER;  // or can be ZIGBEE_COORDINATOR, but it won't scan itself
+zigbee_role_t role = ZIGBEE_COORDINATOR; //ZIGBEE_ROUTER;  // or can be ZIGBEE_COORDINATOR, but it won't scan itself
 #else
 zigbee_role_t role = ZIGBEE_END_DEVICE;
 #endif
