@@ -1,0 +1,6 @@
+*~
+.*~
+dist/
+.arduino15
+*.txt
+a.out
