@@ -57,7 +57,7 @@ function do_build(){
         --build-property build.flags.lto=false \
         --build-property build.extra_flags="-DZIGBEE_MODE_ZCZR $DEV_EXTRA_FLAGS" \
         --build-property build.custom_partitions=partitions \
-        --build-property upload.maximum_size=2031616 \
+        --build-property upload.maximum_size=1851392 \
         --build-property build.zigbee_mode=1 \
         --board-options PartitionScheme=no_ota \
         --board-options ZigbeeMode=zczr \
