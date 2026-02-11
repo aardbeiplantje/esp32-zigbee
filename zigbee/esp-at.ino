@@ -4754,9 +4754,13 @@ void handle_ble_commands(){
     cmd_len = strlen(ble_rd_ptr);
     ble_cmd_ready--;
   }
-  if(ble_cmd_ptr && ble_rd_ptr == ble_cmd_ptr)
+  if(ble_cmd_ptr && ble_rd_ptr == ble_cmd_ptr){
     // all commands processed, reset pointer
     ble_cmd_ptr = &ble_cmd_buffer[0];
+    D("[BLE] All pending commands processed, reset command buffer pointer");
+  } else {
+    D("[BLE] Pending commands remaining: %d, next command at ptr: %p", ble_cmd_ready, ble_rd_ptr);
+  }
 }
 
 NOINLINE
