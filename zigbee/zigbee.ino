@@ -83,6 +83,7 @@ namespace ZIGBEE {
         if(scan_in_progress) {
             int16_t zigbee_scan_status = Zigbee.scanComplete();
             if (zigbee_scan_status < 0) {
+                LOG("[ZIGBEE] Scan failed with error code: %d", zigbee_scan_status);
                 scan_in_progress = false;
                 return;
             } else if (zigbee_scan_status == 0) {
