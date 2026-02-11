@@ -1,5 +1,5 @@
 /*
- * zigbee.cpp: Common source file for Zigbee setup
+ * zigbee.ino: Common source file for Zigbee setup
  *
  * Author: CowboyTim
  *
@@ -31,7 +31,6 @@
 
 #include <zigbee.h>
 #include <common.h>
-#include <Arduino.h>
 #include <string.h>
 
 namespace ZIGBEE {

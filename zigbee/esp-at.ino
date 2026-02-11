@@ -211,6 +211,7 @@ unsigned long ble_advertising_start = 0;
 uint8_t deviceConnected = 0;
 uint8_t securityRequestPending = 0;
 uint32_t passkeyForDisplay = 0;
+int16_t ble_conn_handle = -1;
 #endif // BT_BLE
 #endif // BLUETOOTH_UART_AT
 
@@ -4240,7 +4241,21 @@ class MyServerCallbacks: public BLEServerCallbacks {
       doYIELD;
       deviceConnected = 1;
       securityRequestPending = 0;
-      LOG("[BLE] Device connected, MTU: %d", pServer->getPeerMTU(1));
+
+      // Get and store the connection handle
+      // On ESP32-H2, the peer list might not be populated immediately, so try with a small delay
+      ble_conn_handle = -1;
+      for(int retry = 0; retry < 3 && ble_conn_handle == -1; retry++) {
+        if(retry > 0) {
+          delay(10); // Small delay before retry
+        }
+        for(auto &z: pServer->getPeerDevices(false)) {
+          ble_conn_handle = z.first;
+          break;
+        }
+      }
+
+      LOG("[BLE] Device connected, conn_handle: %d, MTU: %d", ble_conn_handle, ble_conn_handle != -1 ? pServer->getPeerMTU(ble_conn_handle) : 0);
     };
 
     void onDisconnect(BLEServer* pServer) {
@@ -4249,6 +4264,7 @@ class MyServerCallbacks: public BLEServerCallbacks {
       securityRequestPending = 0;
       passkeyForDisplay = 0;
       ble_advertising_start = 0;
+      ble_conn_handle = -1;
       LOG("[BLE] disconnected");
     }
 
@@ -4598,6 +4614,7 @@ void destroy_ble() {
     deviceConnected = 0;
     securityRequestPending = 0;
     passkeyForDisplay = 0;
+    ble_conn_handle = -1;
     BLEDevice::deinit(false);
     delay(100);
     LOG("[BLE] Deinitialized");
@@ -4844,16 +4861,41 @@ uint8_t ble_send_n(const uint8_t *bstr, size_t len) {
       R("<<\n");
       #endif // DEBUG
 
-      // let's use ble_gatts_notify_custom() directly to get the proper error code
-      uint16_t conn_handle = 0;
-      for(auto &z: pService->getServer()->getPeerDevices(false)) {
-        conn_handle = z.first;
+      // Get connection handle - use cached value or fetch dynamically
+      int16_t conn_handle = ble_conn_handle;
+
+      // If cached handle is 0, try to fetch it now (ESP32-H2 timing issue workaround)
+      if(conn_handle == -1 && pService && pService->getServer()) {
+        D("[BLE] Cached handle is 0, attempting to fetch from server");
+        for(auto &z: pService->getServer()->getPeerDevices(false)) {
+          conn_handle = z.first;
+          ble_conn_handle = conn_handle; // Cache it for next time
+          D("[BLE] Fetched conn_handle: %d", conn_handle);
+          break;
+        }
+      }
+
+      // If still no handle, try direct NimBLE API
+      if(conn_handle == -1) {
+        D("[BLE] Trying direct NimBLE API to find connection");
+        // Iterate through all possible connection handles (NimBLE supports up to MYNEWT_VAL_BLE_MAX_CONNECTIONS)
+        for(uint16_t i = 0; i < 9; i++) {
+          ble_gap_conn_desc desc;
+          if(ble_gap_conn_find(i, &desc) == 0) {
+            conn_handle = desc.conn_handle;
+            ble_conn_handle = conn_handle; // Cache it
+            D("[BLE] Found active connection via NimBLE API, handle: %d", conn_handle);
+            break;
+          }
+        }
+      }
+
+      if(conn_handle == -1) {
+        LOG("[BLE] Stopped sending, no valid connection handle (stored: %d)", ble_conn_handle);
         break;
       }
-      if(!conn_handle) {
-        LOG("[BLE] Stopped sending, no valid connection handle");
-        break;
-      }
+
+      D("[BLE] Using conn_handle: %d", conn_handle);
       uint8_t nr_retries = 0;
       os_mbuf *ble_out_msg = NULL;
       REDO_SEND: {
@@ -4961,6 +5003,7 @@ void stop_advertising_ble() {
     LOG("[BLE] Disconnecting from connected device");
     pServer->disconnect(0);
     deviceConnected = 0;
+    ble_conn_handle = -1;
   }
 
   // Stop advertising

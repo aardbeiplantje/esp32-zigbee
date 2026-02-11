@@ -9,7 +9,7 @@
 #
 
 HERE=$(dirname $(readlink -f $BASH_SOURCE))
-MODULE=${MODULE:-esp-at}
+MODULE=${MODULE:-zigbee}
 DEV_PLATFORM=${DEV_PLATFORM:-esp32:esp32@3.3.0}
 DEV_BOARD=${DEV_BOARD:-esp32:esp32:esp32h2}
 DEV_PORT=${DEV_PORT:-/dev/ttyACM0}
@@ -83,7 +83,7 @@ function show_usage(){
     echo "  help            Show this usage information"
     echo ""
     echo "Environment variables:"
-    echo "  MODULE                    Arduino project directory (default: esp-at)"
+    echo "  MODULE                    Arduino project directory (default: zigbee)"
     echo "  DEV_PLATFORM              Arduino platform (default: esp32:esp32)"
     echo "  DEV_BOARD                 Board identifier (default: esp32:esp32:esp32c3)"
     echo "  DEV_PORT                  Serial port (default: /dev/ttyACM0)"
