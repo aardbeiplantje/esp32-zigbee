@@ -50,7 +50,7 @@ namespace ZIGBEE {
             coordinator.pairing_enabled = false;
             coordinator.pairing_timeout = 0;
             coordinator.initialized = true;
-            LOG("Zigbee coordinator initialized");
+            LOG("[ZIGBEE] coordinator initialized");
         }
     }
 
@@ -58,13 +58,13 @@ namespace ZIGBEE {
         coordinator.pairing_enabled = true;
         coordinator.pairing_timeout = timeout_ms;
         pairing_start_time = millis();
-        LOG("Zigbee pairing enabled for %u ms", timeout_ms);
+        LOG("[ZIGBEE] pairing enabled for %u ms", timeout_ms);
     }
 
     void disable_pairing() {
         coordinator.pairing_enabled = false;
         coordinator.pairing_timeout = 0;
-        LOG("Zigbee pairing disabled");
+        LOG("[ZIGBEE] pairing disabled");
     }
 
     bool is_pairing_enabled() {
@@ -91,20 +91,20 @@ namespace ZIGBEE {
             if (d.ieee_addr == dev.ieee_addr) {
                 // Update existing device
                 d = dev;
-                LOG("Zigbee device updated: 0x%016llX", dev.ieee_addr);
+                LOG("[ZIGBEE] device updated: 0x%016llX", dev.ieee_addr);
                 return true;
             }
         }
         // Add new device
         coordinator.devices.push_back(dev);
-        LOG("Zigbee device added: 0x%016llX", dev.ieee_addr);
+        LOG("[ZIGBEE] device added: 0x%016llX", dev.ieee_addr);
         return true;
     }
 
     bool remove_device(uint64_t ieee_addr) {
         for (auto it = coordinator.devices.begin(); it != coordinator.devices.end(); ++it) {
             if (it->ieee_addr == ieee_addr) {
-                LOG("Zigbee device removed: 0x%016llX", ieee_addr);
+                LOG("[ZIGBEE] device removed: 0x%016llX", ieee_addr);
                 coordinator.devices.erase(it);
                 return true;
             }
@@ -118,7 +118,7 @@ namespace ZIGBEE {
                 return &d;
             }
         }
-        return nullptr;
+        return NULL;
     }
 }
 
@@ -132,13 +132,15 @@ namespace PLUGINS {
     }
 
     const char * at_cmd_handler(const char *at_cmd) {
-        static char response[512];
-        char *p = nullptr;
+        unsigned int cmd_len = strlen(at_cmd);
+        ALIGN(4) static char response[512];
+        char *p = NULL;
+        errno = 0;
+        D("[ZIGBEE] AT command received: %s", at_cmd);
 
-        // AT+ZBLIST - List all paired Zigbee devices
-        if ((p = COMMON::at_cmd_check("AT+ZBLIST", at_cmd, 9)) != nullptr) {
+        // AT+ZBLIST? - List all paired Zigbee devices
+        if (p = COMMON::at_cmd_check("AT+ZBLIST?", at_cmd, cmd_len)) {
             const auto& devices = ZIGBEE::get_devices();
-            
             if (devices.empty()) {
                 snprintf(response, sizeof(response), "+ZBLIST:0\r\nOK");
                 return response;
@@ -148,7 +150,7 @@ namespace PLUGINS {
             int offset = 0;
             offset += snprintf(response + offset, sizeof(response) - offset, 
                               "+ZBLIST:%d\r\n", (int)devices.size());
-            
+
             for (size_t i = 0; i < devices.size() && offset < sizeof(response) - 100; i++) {
                 const auto& dev = devices[i];
                 offset += snprintf(response + offset, sizeof(response) - offset,
@@ -163,76 +165,67 @@ namespace PLUGINS {
             offset += snprintf(response + offset, sizeof(response) - offset, "OK");
             return response;
         }
-
-        // AT+ZBPAIR - Enable/disable pairing mode
-        // AT+ZBPAIR=<enable>[,<timeout_sec>]
-        if ((p = COMMON::at_cmd_check("AT+ZBPAIR", at_cmd, 9)) != nullptr) {
-            if (*p == '?') {
-                // Query current pairing status
-                bool enabled = ZIGBEE::is_pairing_enabled();
-                snprintf(response, sizeof(response), "+ZBPAIR:%s\r\nOK",
-                        enabled ? "enabled" : "disabled");
-                return response;
-            }
-            else if (*p == '=') {
-                p++;
-                int enable = 0;
-                int timeout_sec = 60;  // Default 60 seconds
-                
-                // Parse enable parameter
-                if (sscanf(p, "%d", &enable) >= 1) {
-                    // Check for optional timeout parameter
-                    char *comma = strchr(p, ',');
-                    if (comma != nullptr) {
-                        sscanf(comma + 1, "%d", &timeout_sec);
-                    }
-
-                    if (enable) {
-                        ZIGBEE::enable_pairing(timeout_sec * 1000);
-                        snprintf(response, sizeof(response), 
-                                "+ZBPAIR:enabled,%d\r\nOK", timeout_sec);
-                    } else {
-                        ZIGBEE::disable_pairing();
-                        snprintf(response, sizeof(response), "+ZBPAIR:disabled\r\nOK");
-                    }
-                    return response;
-                }
-                return AT_R("ERROR");
-            }
-            else {
-                // No parameter - query status
-                bool enabled = ZIGBEE::is_pairing_enabled();
-                snprintf(response, sizeof(response), "+ZBPAIR:%s\r\nOK",
-                        enabled ? "enabled" : "disabled");
-                return response;
-            }
+        // AT+ZBPAIR? - Query pairing mode status
+        else if (p = COMMON::at_cmd_check("AT+ZBPAIR?", at_cmd, cmd_len)) {
+            D("[ZIGBEE] AT+ZBPAIR command detected, next: %s", p);
+            // Query current pairing status
+            bool enabled = ZIGBEE::is_pairing_enabled();
+            snprintf(response, sizeof(response), "+ZBPAIR:%s\r\nOK",
+                    enabled ? "enabled" : "disabled");
+            return response;
         }
+        // AT+ZBPAIR=<enable>[,<timeout_sec>] - Set pairing mode
+        // AT+ZBPAIR=1,120 - Enable pairing for 120 seconds
+        // AT+ZBPAIR=0 - Disable pairing
+        else if (p = COMMON::at_cmd_check("AT+ZBPAIR=", at_cmd, cmd_len)) {
+            int enable = 0;
+            int timeout_sec = 60;  // Default 60 seconds
 
+            // Parse enable parameter
+            if (sscanf(p, "%d", &enable) >= 1) {
+                // Check for optional timeout parameter
+                char *comma = strchr(p, ',');
+                if (comma != NULL) {
+                    sscanf(comma + 1, "%d", &timeout_sec);
+                }
+
+                if (enable) {
+                    ZIGBEE::enable_pairing(timeout_sec * 1000);
+                    snprintf(response, sizeof(response), 
+                            "+ZBPAIR:enabled,%d\r\nOK", timeout_sec);
+                } else {
+                    ZIGBEE::disable_pairing();
+                    snprintf(response, sizeof(response), "+ZBPAIR:disabled\r\nOK");
+                }
+                return response;
+            }
+            return AT_R("ERROR");
+        }
         // AT+ZBREM - Remove a device by IEEE address
         // AT+ZBREM=<ieee_addr>
-        if ((p = COMMON::at_cmd_check("AT+ZBREM", at_cmd, 8)) != nullptr) {
-            if (*p == '=') {
-                p++;
-                unsigned long long ieee_addr = 0;
-                if (sscanf(p, "0x%llX", &ieee_addr) == 1 || sscanf(p, "%llu", &ieee_addr) == 1) {
-                    if (ZIGBEE::remove_device(ieee_addr)) {
-                        return AT_R_OK;
-                    } else {
-                        return AT_R("ERROR:DEVICE_NOT_FOUND");
-                    }
+        else if (p = COMMON::at_cmd_check("AT+ZBREM=", at_cmd, cmd_len)) {
+            unsigned long long ieee_addr = 0;
+            if (sscanf(p, "0x%llX", &ieee_addr) == 1 || sscanf(p, "%llu", &ieee_addr) == 1) {
+                if (ZIGBEE::remove_device(ieee_addr)) {
+                    return AT_R_OK;
+                } else {
+                    return AT_R("ERROR:DEVICE_NOT_FOUND");
                 }
-                return AT_R("ERROR:INVALID_ADDR");
             }
+            return AT_R("ERROR:INVALID_ADDR");
         }
-
-        return nullptr;  // Command not handled
+        return NULL;  // Command not handled
     }
 
     const char * at_get_help_string() {
-        return 
-            "AT+ZBLIST - List all paired Zigbee devices\r\n"
-            "AT+ZBPAIR? - Query pairing mode status\r\n"
-            "AT+ZBPAIR=<enable>[,<timeout_sec>] - Enable/disable pairing (0=disable, 1=enable)\r\n"
-            "AT+ZBREM=<ieee_addr> - Remove device by IEEE address\r\n";
+        return R"EOF(
+Zigbee AT Commands:
+  AT+ZBLIST?           - List all paired Zigbee devices
+  AT+ZBREM=<ieee_addr> - Remove device by IEEE address
+  AT+ZBPAIR?           - Query pairing mode status
+  AT+ZBPAIR=<enable>[,<timeout_sec>] - Enable/disable pairing
+                                        (0=disable, 1=enable)
+                                        timeout_sec is optional (default 60s)
+)EOF";
     }
 }
