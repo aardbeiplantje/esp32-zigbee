@@ -108,11 +108,11 @@ namespace ZIGBEE {
                         );
                     }
                 }
-#if defined(ZIGBEE_MODE_ED) || defined(ZIGBEE_MODE_ZCZR) || defined(ZIGBEE_MODE_ROUTER)
-                // Only delete scan results if we're an end device
-                // Calling this as coordinator/router causes a crash
-                Zigbee.scanDelete();
-#endif
+                if(role == ZIGBEE_END_DEVICE) {
+                    // Only delete scan results if we're an end device
+                    // Calling this as coordinator/router causes a crash
+                    Zigbee.scanDelete();
+                }
             }
         }
         return;
@@ -123,23 +123,36 @@ namespace ZIGBEE {
     }
 
     void scan_eps() {
-#if defined(ZIGBEE_MODE_ED) || defined(ZIGBEE_MODE_ZCZR) || defined(ZIGBEE_MODE_ROUTER)
         // End devices: scan for networks to join
         LOG("[ZIGBEE] Scanning for Zigbee networks...");
         Zigbee.scanNetworks(ESP_ZB_TRANSCEIVER_ALL_CHANNELS_MASK, 5);
         scan_in_progress = true;
-#else
+
         // Coordinators/routers: list devices bound to our network
         LOG("[ZIGBEE] Listing devices bound to this network...");
         std::list<zb_device_params_t *> eps = zbSwitch.getBoundDevices();
         LOG("[ZIGBEE] Found %d bound devices", eps.size());
         int i = 1;
         for (const auto &ep : eps) {
-            LOG("[ZIGBEE] Device %d: IEEE=0x%016llX, Endpoint=%d", 
-                i++, ep->ieee_addr, ep->endpoint);
+            LOG("[ZIGBEE] Device %d: IEEE=0x%016llX, Short=0x%04X, Endpoint=%d", 
+                i++, ep->ieee_addr, ep->short_addr, ep->endpoint);
+
+            // Try to read Basic cluster attributes for device info
+            // Cluster 0x0000 (Basic), Attribute 0x0004 (Manufacturer Name)
+            esp_zb_zcl_read_attr_cmd_t read_req;
+            read_req.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
+            read_req.zcl_basic_cmd.dst_addr_u.addr_short = ep->short_addr;
+            read_req.zcl_basic_cmd.dst_endpoint = ep->endpoint;
+            read_req.zcl_basic_cmd.src_endpoint = zbSwitch.getEndpoint();
+            read_req.clusterID = 0x0000; // Basic cluster
+
+            LOG("[ZIGBEE] Requesting manufacturer name from device...");
+            esp_zb_zcl_read_attr_cmd_req(&read_req);
+
+            // Also request model identifier (0x0005)
+            LOG("[ZIGBEE] Requesting model identifier from device...");
+            esp_zb_zcl_read_attr_cmd_req(&read_req);
         }
-        scan_in_progress = false;
-#endif
     }
 
 }
