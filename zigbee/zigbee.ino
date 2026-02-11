@@ -92,18 +92,27 @@ namespace ZIGBEE {
                 scan_in_progress = false;
                 zigbee_scan_result_t *scan_result = Zigbee.getScanResult();
                 LOG("[ZIGBEE] Scan complete, found %d endpoints", zigbee_scan_status);
-                std::list<zb_device_params_t *> eps;
-                for (int i = 0; i < zigbee_scan_status; i++) {
-                    LOG("[ZIGBEE] Network %d: PAN ID=0x%04X, Channel=%d, Permit Joining=%s, Router Capacity=%s, End Device Capacity=%s",
-                        i + 1,
-                        scan_result[i].short_pan_id,
-                        scan_result[i].logic_channel,
-                        scan_result[i].permit_joining      ? "Yes" : "No",
-                        scan_result[i].router_capacity     ? "Yes" : "No",
-                        scan_result[i].end_device_capacity ? "Yes" : "No"
-                    );
+                if (zigbee_scan_status > 0 && scan_result != NULL) {
+                    for (int i = 0; i < zigbee_scan_status; i++) {
+                        LOG("[ZIGBEE] Network %d: PAN ID=0x%04X, Channel=%d, Permit Joining=%s, Router Capacity=%s, End Device Capacity=%s",
+                            i + 1,
+                            scan_result[i].short_pan_id,
+                            scan_result[i].logic_channel,
+                            scan_result[i].permit_joining      ? "Yes" : "No",
+                            scan_result[i].router_capacity     ? "Yes" : "No",
+                            scan_result[i].end_device_capacity ? "Yes" : "No"
+                        );
+                        LOG("[ZIGBEE] Extended PAN ID: %02X:%02X:%02X:%02X:%02X:%02X:%02X:%02X",
+                            scan_result[i].extended_pan_id[7], scan_result[i].extended_pan_id[6], scan_result[i].extended_pan_id[5], scan_result[i].extended_pan_id[4],
+                            scan_result[i].extended_pan_id[3], scan_result[i].extended_pan_id[2], scan_result[i].extended_pan_id[1], scan_result[i].extended_pan_id[0]
+                        );
+                    }
                 }
+#if defined(ZIGBEE_MODE_ED) || defined(ZIGBEE_MODE_ZCZR) || defined(ZIGBEE_MODE_ROUTER)
+                // Only delete scan results if we're an end device
+                // Calling this as coordinator/router causes a crash
                 Zigbee.scanDelete();
+#endif
             }
         }
         return;
@@ -114,9 +123,23 @@ namespace ZIGBEE {
     }
 
     void scan_eps() {
-        LOG("[ZIGBEE] Scanning for Zigbee devices...");
+#if defined(ZIGBEE_MODE_ED) || defined(ZIGBEE_MODE_ZCZR) || defined(ZIGBEE_MODE_ROUTER)
+        // End devices: scan for networks to join
+        LOG("[ZIGBEE] Scanning for Zigbee networks...");
         Zigbee.scanNetworks(ESP_ZB_TRANSCEIVER_ALL_CHANNELS_MASK, 5);
         scan_in_progress = true;
+#else
+        // Coordinators/routers: list devices bound to our network
+        LOG("[ZIGBEE] Listing devices bound to this network...");
+        std::list<zb_device_params_t *> eps = zbSwitch.getBoundDevices();
+        LOG("[ZIGBEE] Found %d bound devices", eps.size());
+        int i = 1;
+        for (const auto &ep : eps) {
+            LOG("[ZIGBEE] Device %d: IEEE=0x%016llX, Endpoint=%d", 
+                i++, ep->ieee_addr, ep->endpoint);
+        }
+        scan_in_progress = false;
+#endif
     }
 
 }
