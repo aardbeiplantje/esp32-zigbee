@@ -2393,7 +2393,7 @@ R"EOF(AT+LOOP_DELAY=|?
 )EOF"
 #endif
 
-#if defined(BLUETOOTH_UART_AT) || defined(SUPPORT_BLE_UART1)
+#if defined(BLUETOOTH_UART_AT)
 R"EOF(AT+BLE_PIN=|?
 AT+BLE_SECURITY=|?
 AT+BLE_IO_CAP=|?
@@ -2402,6 +2402,11 @@ AT+BLE_ADDR_TYPE=|?
 AT+BLE_ADDR=|?
 AT+BLE_ADDR_GEN?
 AT+BLE_STATUS?
+)EOF"
+#endif
+
+#if defined(SUPPORT_BLE_UART1)
+R"EOF(
 AT+BLE_UART1=|?
 AT+BLE_UART1_PASS=|?
 )EOF"
@@ -2647,11 +2652,18 @@ BLE Commands:
   AT+BLE_ADDR=<address>         - Set custom BLE MAC address (format: XX:XX:XX:XX:XX:XX)
   AT+BLE_ADDR?                  - Get current BLE MAC address
   AT+BLE_ADDR_GEN?              - Generate new random static address
-  AT+BLE_STATUS?                - Get BLE connection and security status
+  AT+BLE_STATUS?                - Get BLE connection and security status)EOF"
+#endif // BLUETOOTH_UART_AT
+
+#if defined(SUPPORT_BLE_UART1)
+R"EOF(
   AT+BLE_UART1=|?               - Enable/disable BLE UART1 bridge
-  AT+BLE_UART1_PASS=<0|1>       - Enable/disable passthrough mode
-                                    1=passthrough
+                                    1=bridge mode
                                     0=AT command mode
+  AT+BLE_UART1_PASS=<0|1>       - Enable/disable passthrough mode
+                                    (only for BLE_UART1 bridge mode)
+                                    1=passthrough enabled
+                                    0=passthrough disabled
   AT+BLE_UART1_PASS?            - Get passthrough mode status)EOF"
 #endif // BLUETOOTH_UART_AT
 
