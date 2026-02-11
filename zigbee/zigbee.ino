@@ -33,6 +33,8 @@
 #include <common.h>
 #include <string.h>
 
+#include <Zigbee.h>
+
 namespace ZIGBEE {
     // Global coordinator state
     static CoordinatorState coordinator = {
@@ -50,6 +52,7 @@ namespace ZIGBEE {
             coordinator.pairing_enabled = false;
             coordinator.pairing_timeout = 0;
             coordinator.initialized = true;
+            Zigbee.begin(ZIGBEE_COORDINATOR);
             LOG("[ZIGBEE] coordinator initialized");
         }
     }

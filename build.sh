@@ -10,7 +10,7 @@
 
 HERE=$(dirname $(readlink -f $BASH_SOURCE))
 MODULE=${MODULE:-zigbee}
-DEV_PLATFORM=${DEV_PLATFORM:-esp32:esp32@3.3.0}
+DEV_PLATFORM=${DEV_PLATFORM:-esp32:esp32}
 DEV_BOARD=${DEV_BOARD:-esp32:esp32:esp32h2}
 DEV_PORT=${DEV_PORT:-/dev/ttyACM0}
 DEV_BOARD_BAUDRATE=${DEV_BOARD_BAUDRATE:-460800}
@@ -18,13 +18,14 @@ export ARDUINO_DIRECTORIES_DATA=${ARDUINO_DIRECTORIES_DATA:-$HERE/.arduino15}
 export TMPDIR=/var/tmp
 
 function do_update(){
-    DEV_URLS=${DEV_URLS:-https://dl.espressif.com/dl/package_esp32_index.json}
+    DEV_URLS=${DEV_URLS:-https://espressif.github.io/arduino-esp32/package_esp32_dev_index.json}
     [ "${DEV_UPDATE:-0}" = 1 ] && {
         arduino-cli core install $DEV_PLATFORM
         arduino-cli --additional-urls "$DEV_URLS" update
         arduino-cli --additional-urls "$DEV_URLS" core install "${DEV_PLATFORM}"
         arduino-cli --additional-urls "$DEV_URLS" lib update-index
         arduino-cli --additional-urls "$DEV_URLS" lib install 'SerialCommands'
+        arduino-cli --additional-urls "$DEV_URLS" lib install 'Zigbee'
         arduino-cli --additional-urls "$DEV_URLS" lib upgrade
         arduino-cli --additional-urls "$DEV_URLS" board list
     }
@@ -57,7 +58,10 @@ function do_build(){
         --build-property build.extra_flags="$DEV_EXTRA_FLAGS" \
         --build-property build.partitions=min_spiffs \
         --build-property upload.maximum_size=2031616 \
+        --build-property build.zigbee_mode=1 \
+        --build-property build.extra_flags=-DARDUINO_ZIGBEE_GATEWAY \
         --board-options PartitionScheme=no_ota \
+        --board-options ZigbeeMode=zczr \
         $MODULE \
         || exit $?
 }
