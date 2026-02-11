@@ -4796,10 +4796,18 @@ void ble_send_response(const char *response) {
     return;
 
   // Send response with line terminator
-  uint8_t local_buf[2 + ssz] = {0};
+  uint8_t local_buf[3 + ssz] = {0};
   uint8_t ok = 1;
   memcpy(local_buf, response, ssz);
   memcpy(local_buf + ssz, "\r\n", 2);
+  local_buf[ssz + 2] = 0; // null-terminate for logging
+  #ifdef DEBUG
+  T(""); R("[BLE] Response to send: (%d bytes):\n", ssz);
+  for(size_t i = 0; i < ssz + 2; i++) {
+    R("%c", local_buf[i], isprint(local_buf[i]) ? local_buf[i] : '.');
+  }
+  R("\n<<\n");
+  #endif // DEBUG
   ok &= ble_send_n((const uint8_t *)&local_buf, ssz + 2);
   if(!ok) {
     LOG("[BLE] Failed to send response");
@@ -4840,6 +4848,11 @@ uint8_t ble_send_n(const uint8_t *bstr, size_t len) {
     static size_t snr = 0;
     snr++;
     D("[BLE] Sending response, total length: %d", len);
+    D("[BLE] BLE MTU: %d, ATT payload max: %d", ble_mtu, ble_mtu - 3);
+    D("[BLE] Device connected: %d, Characteristic handle: %d", deviceConnected, pTxCharacteristic->getHandle());
+    D("[BLE] BLE Server peer devices count: %d", pService && pService->getServer() ? pService->getServer()->getPeerDevices(false).size() : 0);
+    D("[BLE] Cached connection handle: %d", ble_conn_handle);
+    D("[BLE] Starting to send response in chunks...");
     // Split response into chunks (BLE characteristic limit), use negotiated MTU
     size_t o = 0;
     size_t cs = 0;
