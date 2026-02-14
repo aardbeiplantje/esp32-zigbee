@@ -47,17 +47,46 @@ zigbee_role_t role = ZIGBEE_END_DEVICE;
 
 
 namespace ZIGBEE {
-    static uint32_t pairing_start_time = 0;
     // Global variables to store valve data for I2C requests
     RTC_DATA_ATTR float currentTemp = 0;
     RTC_DATA_ATTR bool scan_in_progress = false;
-    ZigbeeGateway zbGw = ZigbeeGateway(5);  // Endpoint 5 for switch
+    ZigbeeGateway zbGw = ZigbeeGateway(1);
+    ZigbeeSwitch zbSwitch = ZigbeeSwitch(2);
+    ZigbeeThermostat zbThermostat = ZigbeeThermostat(3);
 
     void init() {
         LOG("[ZIGBEE] Initializing Zigbee stack as %s...", role == ZIGBEE_COORDINATOR ? "COORDINATOR" : (role == ZIGBEE_ROUTER ? "ROUTER" : "END DEVICE"));
-        zbGw.setManufacturerAndModel(DEFAULT_HOSTNAME, "zigbee-switch");
+        zbGw.setManufacturerAndModel(DEFAULT_HOSTNAME, "zigbee-gateway");
+        zbGw.setPowerSource(ZB_POWER_SOURCE_MAINS);
         zbGw.allowMultipleBinding(true);
+        zbGw.onIdentify([](uint16_t duration) {
+            LOG("[ZIGBEE] Identify command received with duration %d seconds", duration);
+        });
+        zbGw.onDefaultResponse([](zb_cmd_type_t resp_to_cmd, esp_zb_zcl_status_t status) {
+            LOG("[ZIGBEE] Default response received for command 0x%02X with status 0x%02X", resp_to_cmd, status);
+        });
+        LOG("[ZIGBEE] Adding gateway endpoint with ID %d", zbGw.getEndpoint());
         Zigbee.addEndpoint(&zbGw);
+
+        zbSwitch.setManufacturerAndModel(DEFAULT_HOSTNAME, "zigbee-switch");
+        zbSwitch.setPowerSource(ZB_POWER_SOURCE_MAINS);
+        zbSwitch.allowMultipleBinding(true);
+        zbSwitch.onIdentify([](uint16_t duration) {
+            LOG("[ZIGBEE] Switch Identify command received with duration %d seconds", duration);
+        });
+        LOG("[ZIGBEE] Adding switch endpoint with ID %d", zbSwitch.getEndpoint());
+        Zigbee.addEndpoint(&zbSwitch);
+
+        zbThermostat.setManufacturerAndModel(DEFAULT_HOSTNAME, "zigbee-thermostat");
+        zbThermostat.setPowerSource(ZB_POWER_SOURCE_MAINS);
+        zbThermostat.allowMultipleBinding(true);
+        zbThermostat.onIdentify([](uint16_t duration) {
+            LOG("[ZIGBEE] Thermostat Identify command received with duration %d seconds",
+                duration);
+        });
+        LOG("[ZIGBEE] Adding thermostat endpoint with ID %d", zbThermostat.getEndpoint());
+        Zigbee.addEndpoint(&zbThermostat);
+
         Zigbee.setRebootOpenNetwork(180);
         if(!Zigbee.begin(role)) {
             LOG("[ZIGBEE] Failed to initialize Zigbee stack");
@@ -66,21 +95,7 @@ namespace ZIGBEE {
         LOG("[ZIGBEE] Zigbee stack initialized successfully");
     }
 
-    void enable_pairing(uint32_t timeout_ms) {
-        pairing_start_time = millis();
-        LOG("[ZIGBEE] pairing enabled for %u ms", timeout_ms);
-    }
-
-    void disable_pairing() {
-        LOG("[ZIGBEE] pairing disabled");
-    }
-
     void loop() {
-        // Check if pairing mode should be disabled after timeout
-        if (pairing_start_time > 0 && (millis() - pairing_start_time) > 60000) {
-            disable_pairing();
-            pairing_start_time = 0;
-        }
         if(scan_in_progress) {
             int16_t zigbee_scan_status = Zigbee.scanComplete();
             if (zigbee_scan_status < 0) {
@@ -115,11 +130,13 @@ namespace ZIGBEE {
                 }
             }
         }
+        if(Zigbee.connected()) {
+            // Only print connected status for coordinators/routers, end devices won't be able to connect until they join a network
+            LOG("[ZIGBEE] Device is connected to a network");
+        } else {
+            return;
+        }
         return;
-    }
-
-    std::list<zb_device_params_t *> get_bound_eps() {
-        return zbGw.getBoundDevices();
     }
 
     void scan_eps() {
@@ -127,16 +144,6 @@ namespace ZIGBEE {
         LOG("[ZIGBEE] Scanning for Zigbee networks...");
         Zigbee.scanNetworks(ESP_ZB_TRANSCEIVER_ALL_CHANNELS_MASK, 5);
         scan_in_progress = true;
-    }
-}
-
-namespace PLUGINS {
-    void initialize() {
-        ZIGBEE::init();
-    }
-
-    void loop_pre() {
-        ZIGBEE::loop();
     }
 
     const char * at_cmd_handler(const char *at_cmd) {
@@ -151,7 +158,7 @@ namespace PLUGINS {
             size_t offset = 0;
             // Query list of paired devices
             LOG("[ZIGBEE] Listing devices bound to this network...");
-            std::list<zb_device_params_t *> eps = ZIGBEE::get_bound_eps();
+            std::list<zb_device_params_t *> eps = zbGw.getBoundDevices();
             // Coordinators/routers: list devices bound to our network
             LOG("[ZIGBEE] Found %d bound devices", eps.size());
             int i = 1;
@@ -165,7 +172,7 @@ namespace PLUGINS {
                 read_req.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
                 read_req.zcl_basic_cmd.dst_addr_u.addr_short = ep->short_addr;
                 read_req.zcl_basic_cmd.dst_endpoint = ep->endpoint;
-                read_req.zcl_basic_cmd.src_endpoint = ZIGBEE::zbGw.getEndpoint();
+                read_req.zcl_basic_cmd.src_endpoint = zbGw.getEndpoint();
                 read_req.clusterID = 0x0000; // Basic cluster
 
                 LOG("[ZIGBEE] Requesting manufacturer name from device...");
@@ -209,55 +216,12 @@ namespace PLUGINS {
         // AT+ZBSCAN? - Query scan status
         else if (p = COMMON::at_cmd_check("AT+ZBSCAN=", at_cmd, cmd_len)) {
             if (strcmp(p, "1") == 0) {
-                ZIGBEE::scan_eps();
+                scan_eps();
                 return AT_R("OK");
             } else if (strcmp(p, "0") == 0) {
                 return AT_R("ERROR:NOT_IMPLEMENTED");
             }
             return AT_R("ERROR:INVALID_PARAM");
-        }
-        // AT+ZBPAIR? - Query pairing mode status
-        else if (p = COMMON::at_cmd_check("AT+ZBPAIR?", at_cmd, cmd_len)) {
-            D("[ZIGBEE] AT+ZBPAIR command detected, next: %s", p);
-            // Check if pairing is currently enabled based on time
-            // TODO: This should check actual pairing status from Zigbee stack
-            return AT_R("ERROR:NOT_IMPLEMENTED");
-        }
-        // AT+ZBPAIR=<enable>[,<timeout_sec>] - Set pairing mode
-        // AT+ZBPAIR=1,120 - Enable pairing for 120 seconds
-        // AT+ZBPAIR=0 - Disable pairing
-        else if (p = COMMON::at_cmd_check("AT+ZBPAIR=", at_cmd, cmd_len)) {
-            int enable = 0;
-            int timeout_sec = 60;  // Default 60 seconds
-
-            // Parse enable parameter
-            if (sscanf(p, "%d", &enable) >= 1) {
-                // Check for optional timeout parameter
-                char *comma = strchr(p, ',');
-                if (comma != NULL) {
-                    sscanf(comma + 1, "%d", &timeout_sec);
-                }
-
-                if (enable) {
-                    ZIGBEE::enable_pairing(timeout_sec * 1000);
-                    snprintf(response, sizeof(response), "+ZBPAIR:enabled,%d\r\nOK", timeout_sec);
-                } else {
-                    ZIGBEE::disable_pairing();
-                    snprintf(response, sizeof(response), "+ZBPAIR:disabled\r\nOK");
-                }
-                return response;
-            }
-            return AT_R("ERROR");
-        }
-        // AT+ZBREM - Remove a device by IEEE address
-        // AT+ZBREM=<ieee_addr>
-        else if (p = COMMON::at_cmd_check("AT+ZBREM=", at_cmd, cmd_len)) {
-            unsigned long long ieee_addr = 0;
-            if (sscanf(p, "0x%llX", &ieee_addr) == 1 || sscanf(p, "%llu", &ieee_addr) == 1) {
-                // TODO: Remove device with this IEEE address
-                return AT_R("ERROR:NOT_IMPLEMENTED");
-            }
-            return AT_R("ERROR:INVALID_ADDR");
         }
         return NULL;  // Command not handled
     }
@@ -266,11 +230,21 @@ namespace PLUGINS {
         return R"EOF(
 Zigbee AT Commands:
   AT+ZBLIST?           - List all paired Zigbee devices
-  AT+ZBREM=<ieee_addr> - Remove device by IEEE address
-  AT+ZBPAIR?           - Query pairing mode status
-  AT+ZBPAIR=<enable>[,<timeout_sec>] - Enable/disable pairing
-                                        (0=disable, 1=enable)
-                                        timeout_sec is optional (default 60s)
 )EOF";
+    }
+}
+
+namespace PLUGINS {
+    void initialize() {
+        ZIGBEE::init();
+    }
+    void loop_pre() {
+        ZIGBEE::loop();
+    }
+    const char * at_cmd_handler(const char *at_cmd) {
+        return ZIGBEE::at_cmd_handler(at_cmd);
+    }
+    const char * at_get_help_string() {
+        return ZIGBEE::at_get_help_string();
     }
 }
