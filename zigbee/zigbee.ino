@@ -229,7 +229,9 @@ namespace ZIGBEE {
     const char * at_get_help_string() {
         return R"EOF(
 Zigbee AT Commands:
-  AT+ZBLIST?           - List all paired Zigbee devices
+  AT+ZBLIST?          - List all paired Zigbee devices
+  AT+ZBJOIN=<sec>     - Enable permit joining for specified seconds (0 to disable)
+  AT+ZBSCAN=1         - Scan for nearby Zigbee networks (end devices
 )EOF";
     }
 }
