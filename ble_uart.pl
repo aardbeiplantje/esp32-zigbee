@@ -519,12 +519,12 @@ sub detect_address_type {
     # Private resolvable addresses have MSBs = 01 (0x40-0x7F)
     # Private non-resolvable addresses have MSBs = 00 (0x00-0x3F)
     if (($first_byte & 0xC0) == 0x40) {
-        logger::warn("Address $addr appears to be a private resolvable address - treating as random");
+        logger::info("Address $addr appears to be a private resolvable address - treating as random");
         return 2; # BDADDR_LE_RANDOM
     }
 
     if (($first_byte & 0xC0) == 0x00) {
-        logger::warn("Address $addr appears to be a private non-resolvable address - treating as random");
+        logger::info("Address $addr appears to be a private non-resolvable address - treating as random");
         return 2; # BDADDR_LE_RANDOM
     }
 
@@ -2368,7 +2368,7 @@ sub _att_opcode_0x03 {
     my ($self, $data) = @_;
     my ($mtu) = unpack('xS<', $data);
     if (!defined $mtu || $mtu < 23 || $mtu > 517) {
-        logger::warn("Invalid MTU size received from server, using default of 23 bytes");
+        logger::info("Invalid MTU size received from server, using default of 23 bytes");
         return;
     }
     logger::info(sprintf "ATT Server MTU size: %d bytes", $mtu);
