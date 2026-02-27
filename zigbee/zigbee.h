@@ -81,6 +81,7 @@ namespace ZIGBEE {
     void disable_pairing();
     std::list<zb_device_params_t *> get_bound_eps();
     void scan_eps();
+    void discover_devices();
 }
 
 #endif // _ZIGBEE_H
