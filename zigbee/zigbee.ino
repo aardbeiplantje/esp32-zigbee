@@ -29,6 +29,7 @@
  * For more information, please refer to <https://unlicense.org>
  */
 
+// Zigbee Coordinator mode is set via compiler flags from build.sh: -DZIGBEE_MODE_ZCZR
 #include <zigbee.h>
 #include <common.h>
 
@@ -41,10 +42,15 @@
 #include <vector>
 
 #ifdef ZIGBEE_MODE_ZCZR
-zigbee_role_t role = ZIGBEE_COORDINATOR; //ZIGBEE_ROUTER;  // or can be ZIGBEE_COORDINATOR, but it won't scan itself
+#pragma message "ZIGBEE_MODE_ZCZR IS DEFINED - Using COORDINATOR (role 0)"
+zigbee_role_t role = ZIGBEE_COORDINATOR;  // Confusing but COORDINATOR=0 in Arduino lib
 #else
-zigbee_role_t role = ZIGBEE_END_DEVICE;
+#pragma message "ZIGBEE_MODE_ZCZR NOT DEFINED - Using END_DEVICE (role 2)"
+zigbee_role_t role = ZIGBEE_END_DEVICE;  // Confusing but END_DEVICE=2 in Arduino lib
 #endif
+
+// Global to track if this is our first call to Zigbee.begin() - it may be reassigning role!
+static bool zigbee_begin_called = false;
 
 
 namespace ZIGBEE {
@@ -125,6 +131,7 @@ namespace ZIGBEE {
         // wait for pairing/joining during 180s after reboot
         LOG("[ZIGBEE] Setting open network for 180 seconds after reboot to allow joining");
         Zigbee.setRebootOpenNetwork(180);
+        LOG("[ZIGBEE] About to call Zigbee.begin() with role=%d  (ZIGBEE_COORDINATOR=%d, ZIGBEE_END_DEVICE=%d)", role, ZIGBEE_COORDINATOR, ZIGBEE_END_DEVICE);
         if(!Zigbee.begin(role)) {
             LOG("[ZIGBEE] Failed to initialize Zigbee stack");
             return;
@@ -132,6 +139,10 @@ namespace ZIGBEE {
         LOG("[ZIGBEE] Zigbee stack initialized successfully");
         LOG("[ZIGBEE] *** ESP32H2 is now the COORDINATOR - network ready for devices to join ***");
         LOG("[ZIGBEE] Enable pairing with: AT+ZBJOIN=60");
+        // Log network diagnostics
+        delay(100);  // Give stack time to settle
+        LOG("[ZIGBEE] Stack state check: connected=%s", Zigbee.connected() ? "YES" : "NO");
+        LOG("[ZIGBEE] Actual role=0 is COORDINATOR, role=2 is END_DEVICE in Arduino lib");
     }
 
     void loop() {
@@ -169,7 +180,7 @@ namespace ZIGBEE {
                 }
             }
         }
-        
+
         // Monitor permit join status
         if (permit_join_end_time > 0 && millis() < permit_join_end_time) {
             unsigned long now = millis();
@@ -178,6 +189,11 @@ namespace ZIGBEE {
             if (now - last_permit_join_log_time >= 10000) {
                 std::list<zb_device_params_t *> eps = zbGw.getBoundDevices();
                 LOG("[ZIGBEE] *** Permit Joining Active *** %lu seconds remaining, %d devices connected", remaining, eps.size());
+                if (last_permit_join_log_time == 0) {
+                    // First log - show network diagnostics
+                    LOG("[ZIGBEE] Network state: Zigbee connected=%s, permit_join_end_time=%lu", 
+                        Zigbee.connected() ? "YES" : "NO", permit_join_end_time);
+                }
                 last_permit_join_log_time = now;
             }
         } else if (permit_join_end_time > 0) {
@@ -186,7 +202,7 @@ namespace ZIGBEE {
             std::list<zb_device_params_t *> eps = zbGw.getBoundDevices();
             LOG("[ZIGBEE] Permit joining window closed - Final device count: %d", eps.size());
         }
-        
+
         if(Zigbee.connected()) {
             // Only print connected status for coordinators/routers, end devices won't be able to connect until they join a network
             LOG("[ZIGBEE] Device is connected to a network");
@@ -221,6 +237,10 @@ namespace ZIGBEE {
         // For each device, collect basic information without making ZCL requests
         // ZCL requests from AT handler can cause critical section issues
         for (const auto &ep : eps) {
+            if (!ep) {
+                LOG("[ZIGBEE] Skipping NULL device pointer in bound devices list");
+                continue;
+            }
             // Create device entry
             DiscoveredDevice dev;
             // Convert IEEE address byte array to 64-bit integer
@@ -296,6 +316,10 @@ namespace ZIGBEE {
             LOG("[ZIGBEE] Found %d bound devices", eps.size());
             int i = 1;
             for (const auto &ep : eps) {
+                if (!ep) {
+                    LOG("[ZIGBEE] Skipping NULL device pointer in bound devices list");
+                    continue;
+                }
                 // Format IEEE address from byte array
                 char ieee_str[24] = {0};
                 if (ep->ieee_addr) {
@@ -329,7 +353,9 @@ namespace ZIGBEE {
                     LOG("[ZIGBEE] Enabling permit joining for %d seconds", timeout_sec);
                     LOG("[ZIGBEE] *** PERMIT JOINING ENABLED - Put your devices in pairing mode NOW ***");
                     permit_join_end_time = millis() + (timeout_sec * 1000);
+                    last_permit_join_log_time = 0;  // Reset to log immediately
                     Zigbee.openNetwork(timeout_sec);
+                    LOG("[ZIGBEE] openNetwork(%d) called, waiting for join attempts...", timeout_sec);
                     snprintf(response, sizeof(response), "+ZBJOIN:permit_join_enabled,%d\r\nOK", timeout_sec);
                 } else {
                     LOG("[ZIGBEE] Disabling permit joining");

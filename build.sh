@@ -32,7 +32,7 @@ function do_update(){
 }
 
 function do_build(){
-    DEV_EXTRA_FLAGS="-DARDUINO_USB_MODE=1 -DARDUINO_USB_CDC_ON_BOOT=1 -D_ARDUINO_BLE_H_"
+    DEV_EXTRA_FLAGS="-DARDUINO_USB_MODE=1 -DARDUINO_USB_CDC_ON_BOOT=1 -D_ARDUINO_BLE_H_ -DZIGBEE_MODE_ZCZR"
     if [ "${DEBUG:-0}" = "1" ]; then
         DEV_EXTRA_FLAGS="$DEV_EXTRA_FLAGS -DDEBUG"
     fi
@@ -58,7 +58,7 @@ function do_build(){
         --build-property build.extra_flags="-DZIGBEE_MODE_ZCZR $DEV_EXTRA_FLAGS" \
         --build-property build.custom_partitions=partitions \
         --build-property upload.maximum_size=1851392 \
-        --build-property build.zigbee_mode=1 \
+        --build-property build.zigbee_mode=2 \
         --board-options PartitionScheme=no_ota \
         --board-options ZigbeeMode=zczr \
         $MODULE \
