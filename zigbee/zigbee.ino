@@ -52,9 +52,12 @@ namespace ZIGBEE {
     RTC_DATA_ATTR float currentTemp = 0;
     RTC_DATA_ATTR bool scan_in_progress = false;
     RTC_DATA_ATTR bool device_discovery_in_progress = false;
+    RTC_DATA_ATTR unsigned long permit_join_end_time = 0;
+    RTC_DATA_ATTR unsigned long last_permit_join_log_time = 0;
     ZigbeeGateway zbGw = ZigbeeGateway(1);
     ZigbeeSwitch zbSwitch = ZigbeeSwitch(2);
-    ZigbeeThermostat zbThermostat = ZigbeeThermostat(3);
+    ZigbeeLight zbLight = ZigbeeLight(3);
+    ZigbeeThermostat zbThermostat = ZigbeeThermostat(4);
 
     // Structure to hold discovered device information
     struct DiscoveredDevice {
@@ -98,6 +101,18 @@ namespace ZIGBEE {
         LOG("[ZIGBEE] Adding switch endpoint with ID %d", zbSwitch.getEndpoint());
         Zigbee.addEndpoint(&zbSwitch);
 
+        zbLight.setManufacturerAndModel(DEFAULT_HOSTNAME, "zigbee-light");
+        zbLight.setPowerSource(ZB_POWER_SOURCE_MAINS);
+        zbLight.allowMultipleBinding(true);
+        zbLight.onDefaultResponse([](zb_cmd_type_t resp_to_cmd, esp_zb_zcl_status_t status) {
+            LOG("[ZIGBEE] Light default response received for command 0x%02X with status 0x%02X", resp_to_cmd, status);
+        });
+        zbLight.onIdentify([](uint16_t duration) {
+            LOG("[ZIGBEE] Light Identify command received with duration %d seconds", duration);
+        });
+        LOG("[ZIGBEE] Adding light endpoint with ID %d", zbLight.getEndpoint());
+        Zigbee.addEndpoint(&zbLight);
+
         zbThermostat.setManufacturerAndModel(DEFAULT_HOSTNAME, "zigbee-thermostat");
         zbThermostat.setPowerSource(ZB_POWER_SOURCE_MAINS);
         zbThermostat.allowMultipleBinding(true);
@@ -115,6 +130,8 @@ namespace ZIGBEE {
             return;
         }
         LOG("[ZIGBEE] Zigbee stack initialized successfully");
+        LOG("[ZIGBEE] *** ESP32H2 is now the COORDINATOR - network ready for devices to join ***");
+        LOG("[ZIGBEE] Enable pairing with: AT+ZBJOIN=60");
     }
 
     void loop() {
@@ -152,6 +169,24 @@ namespace ZIGBEE {
                 }
             }
         }
+        
+        // Monitor permit join status
+        if (permit_join_end_time > 0 && millis() < permit_join_end_time) {
+            unsigned long now = millis();
+            unsigned long remaining = (permit_join_end_time - now) / 1000;
+            // Log every 10 seconds (only when 10+ seconds have passed since last log)
+            if (now - last_permit_join_log_time >= 10000) {
+                std::list<zb_device_params_t *> eps = zbGw.getBoundDevices();
+                LOG("[ZIGBEE] *** Permit Joining Active *** %lu seconds remaining, %d devices connected", remaining, eps.size());
+                last_permit_join_log_time = now;
+            }
+        } else if (permit_join_end_time > 0) {
+            permit_join_end_time = 0;
+            last_permit_join_log_time = 0;
+            std::list<zb_device_params_t *> eps = zbGw.getBoundDevices();
+            LOG("[ZIGBEE] Permit joining window closed - Final device count: %d", eps.size());
+        }
+        
         if(Zigbee.connected()) {
             // Only print connected status for coordinators/routers, end devices won't be able to connect until they join a network
             LOG("[ZIGBEE] Device is connected to a network");
@@ -261,19 +296,23 @@ namespace ZIGBEE {
             LOG("[ZIGBEE] Found %d bound devices", eps.size());
             int i = 1;
             for (const auto &ep : eps) {
-                LOG("[ZIGBEE] Device %d: Short=0x%04X, Endpoint=%d", 
-                    i++, ep->short_addr, ep->endpoint);
-
-                // Note: ZCL requests for device info are not safe from AT handler context
-                // Cluster queries would need to be handled asynchronously to avoid
-                // FreeRTOS critical section conflicts
+                // Format IEEE address from byte array
+                char ieee_str[24] = {0};
+                if (ep->ieee_addr) {
+                    snprintf(ieee_str, sizeof(ieee_str), "%02X:%02X:%02X:%02X:%02X:%02X:%02X:%02X",
+                        ep->ieee_addr[7], ep->ieee_addr[6], ep->ieee_addr[5], ep->ieee_addr[4],
+                        ep->ieee_addr[3], ep->ieee_addr[2], ep->ieee_addr[1], ep->ieee_addr[0]);
+                }
+                LOG("[ZIGBEE] Device %d: IEEE=%s, Short=0x%04X, Endpoint=%d", 
+                    i, ieee_str, ep->short_addr, ep->endpoint);
 
                 // Append device info to response string
                 offset += snprintf(response + offset, sizeof(response) - offset,
-                    "+ZBLIST:Short=0x%04X,Endpoint=%d\r\n", ep->short_addr, ep->endpoint);
+                    "+ZBLIST:IEEE=%s,Short=0x%04X,Endpoint=%d\r\n", ieee_str, ep->short_addr, ep->endpoint);
                 if (offset >= sizeof(response)) {
                     break; // Prevent buffer overflow
                 }
+                i++;
             }
             if(eps.size() == 0) {
                 snprintf(response, sizeof(response), "+ZBLIST:No devices found\r\n");
@@ -288,10 +327,13 @@ namespace ZIGBEE {
             if (sscanf(p, "%d", &timeout_sec) >= 1) {
                 if (timeout_sec > 0) {
                     LOG("[ZIGBEE] Enabling permit joining for %d seconds", timeout_sec);
+                    LOG("[ZIGBEE] *** PERMIT JOINING ENABLED - Put your devices in pairing mode NOW ***");
+                    permit_join_end_time = millis() + (timeout_sec * 1000);
                     Zigbee.openNetwork(timeout_sec);
                     snprintf(response, sizeof(response), "+ZBJOIN:permit_join_enabled,%d\r\nOK", timeout_sec);
                 } else {
                     LOG("[ZIGBEE] Disabling permit joining");
+                    permit_join_end_time = 0;
                     Zigbee.closeNetwork();
                     snprintf(response, sizeof(response), "+ZBJOIN:permit_join_disabled\r\nOK");
                 }
