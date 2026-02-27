@@ -119,7 +119,6 @@ case $1 in
         DEV_UPDATE=${DEV_UPDATE:-0} do_update
         do_build
         do_upload
-        do_monitor
         ;;
     update)
         DEV_UPDATE=1 do_update
