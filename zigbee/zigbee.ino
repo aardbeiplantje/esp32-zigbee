@@ -61,6 +61,9 @@ namespace ZIGBEE {
     ZigbeeLight zbLight = ZigbeeLight(3);
     ZigbeeThermostat zbThermostat = ZigbeeThermostat(4);
 
+    // defined below, used by loop()
+    size_t count_children();
+
     // Information about a bound device, as reported by the Zigbee stack
     struct DiscoveredDevice {
         uint64_t ieee_addr;
@@ -195,8 +198,7 @@ namespace ZIGBEE {
             unsigned long remaining = (permit_join_end_time - now) / 1000;
             // Log every 10 seconds (only when 10+ seconds have passed since last log)
             if (now - last_permit_join_log_time >= 10000) {
-                std::list<zb_device_params_t *> eps = zbGw.getBoundDevices();
-                LOG("[ZIGBEE] *** Permit Joining Active *** %lu seconds remaining, %d devices connected", remaining, eps.size());
+                LOG("[ZIGBEE] *** Permit Joining Active *** %lu seconds remaining, %d devices on the network", remaining, count_children());
                 if (last_permit_join_log_time == 0) {
                     // First log - show network diagnostics
                     LOG("[ZIGBEE] Network state: Zigbee connected=%s, permit_join_end_time=%lu", 
@@ -207,8 +209,7 @@ namespace ZIGBEE {
         } else if (permit_join_end_time > 0) {
             permit_join_end_time = 0;
             last_permit_join_log_time = 0;
-            std::list<zb_device_params_t *> eps = zbGw.getBoundDevices();
-            LOG("[ZIGBEE] Permit joining window closed - Final device count: %d", eps.size());
+            LOG("[ZIGBEE] Permit joining window closed - devices on the network: %d", count_children());
         }
     }
 
@@ -282,6 +283,96 @@ namespace ZIGBEE {
         }
     }
 
+    // A device that joins the network shows up in the stack's neighbour table.
+    // getBoundDevices() only knows devices that bound to one of our endpoints,
+    // so a plain join is invisible there; the neighbour table is the real answer
+    // to "did it join?".
+    struct Neighbor {
+        uint8_t ieee_addr[8];
+        uint16_t short_addr;
+        uint8_t device_type;
+        uint8_t relationship;
+        uint8_t lqi;
+        int8_t rssi;
+    };
+
+    const char *nwk_relationship_name(uint8_t r) {
+        switch(r) {
+            case ESP_ZB_NWK_RELATIONSHIP_PARENT:                return "parent";
+            case ESP_ZB_NWK_RELATIONSHIP_CHILD:                 return "child";
+            case ESP_ZB_NWK_RELATIONSHIP_SIBLING:               return "sibling";
+            case ESP_ZB_NWK_RELATIONSHIP_PREVIOUS_CHILD:        return "left";
+            case ESP_ZB_NWK_RELATIONSHIP_UNAUTHENTICATED_CHILD: return "joining";
+            default:                                            return "unknown";
+        }
+    }
+
+    const char *nwk_device_type_name(uint8_t t) {
+        switch(t) {
+            case ESP_ZB_DEVICE_TYPE_COORDINATOR: return "coordinator";
+            case ESP_ZB_DEVICE_TYPE_ROUTER:      return "router";
+            case ESP_ZB_DEVICE_TYPE_ED:          return "end-device";
+            default:                             return "unknown";
+        }
+    }
+
+    // Copy the neighbour table out while the Zigbee lock is held; format it after.
+    size_t get_neighbors(Neighbor *out, size_t max) {
+        size_t n = 0;
+        if(!Zigbee.started())
+            return 0;
+        if(!esp_zb_lock_acquire(pdMS_TO_TICKS(1000))) {
+            LOG("[ZIGBEE] Could not acquire the Zigbee lock to read the neighbour table");
+            return 0;
+        }
+        esp_zb_nwk_info_iterator_t it = ESP_ZB_NWK_INFO_ITERATOR_INIT;
+        esp_zb_nwk_neighbor_info_t nbr;
+        while(n < max && esp_zb_nwk_get_next_neighbor(&it, &nbr) == ESP_OK) {
+            memcpy(out[n].ieee_addr, nbr.ieee_addr, 8);
+            out[n].short_addr   = nbr.short_addr;
+            out[n].device_type  = nbr.device_type;
+            out[n].relationship = nbr.relationship;
+            out[n].lqi          = nbr.lqi;
+            out[n].rssi         = nbr.rssi;
+            n++;
+        }
+        esp_zb_lock_release();
+        return n;
+    }
+
+    // Devices that are on our network right now (children, and devices joining)
+    size_t count_children() {
+        Neighbor nbrs[16];
+        size_t n = get_neighbors(nbrs, 16);
+        size_t c = 0;
+        for(size_t i = 0; i < n; i++)
+            if(nbrs[i].relationship == ESP_ZB_NWK_RELATIONSHIP_CHILD
+               || nbrs[i].relationship == ESP_ZB_NWK_RELATIONSHIP_UNAUTHENTICATED_CHILD)
+                c++;
+        return c;
+    }
+
+    // Append "+<prefix>:..." lines for the neighbour table, returns the new offset
+    size_t append_neighbors(char *buf, size_t buf_len, size_t offset, const char *prefix) {
+        Neighbor nbrs[16];
+        size_t n = get_neighbors(nbrs, 16);
+        LOG("[ZIGBEE] Neighbour table: %d entries", n);
+        for(size_t i = 0; i < n && offset < buf_len; i++) {
+            char ieee_str[24] = {0};
+            snprintf(ieee_str, sizeof(ieee_str), "%02X:%02X:%02X:%02X:%02X:%02X:%02X:%02X",
+                nbrs[i].ieee_addr[7], nbrs[i].ieee_addr[6], nbrs[i].ieee_addr[5], nbrs[i].ieee_addr[4],
+                nbrs[i].ieee_addr[3], nbrs[i].ieee_addr[2], nbrs[i].ieee_addr[1], nbrs[i].ieee_addr[0]);
+            LOG("[ZIGBEE] Neighbour %d: IEEE=%s, Short=0x%04X, %s, %s, LQI=%d, RSSI=%d",
+                i + 1, ieee_str, nbrs[i].short_addr, nwk_device_type_name(nbrs[i].device_type),
+                nwk_relationship_name(nbrs[i].relationship), nbrs[i].lqi, nbrs[i].rssi);
+            offset += snprintf(buf + offset, buf_len - offset,
+                "+%s:IEEE=%s,Short=0x%04X,Type=%s,Rel=%s,LQI=%d,RSSI=%d\r\n",
+                prefix, ieee_str, nbrs[i].short_addr, nwk_device_type_name(nbrs[i].device_type),
+                nwk_relationship_name(nbrs[i].relationship), nbrs[i].lqi, nbrs[i].rssi);
+        }
+        return offset;
+    }
+
     const char * at_cmd_handler(const char *at_cmd) {
         unsigned int cmd_len = strlen(at_cmd);
         ALIGN(4) static char response[512];
@@ -321,8 +412,19 @@ namespace ZIGBEE {
                 }
                 i++;
             }
-            if(eps.size() == 0) {
+            // Devices that joined but bound nothing are only in the neighbour table
+            offset = append_neighbors(response, sizeof(response), offset, "ZBLIST");
+            if(offset == 0) {
                 snprintf(response, sizeof(response), "+ZBLIST:No devices found\r\n");
+            }
+            return response;
+        }
+        // AT+ZBNEIGHBORS? - List the stack's neighbour table (who is on our network)
+        else if (p = COMMON::at_cmd_check("AT+ZBNEIGHBORS?", at_cmd, cmd_len)) {
+            LOG("[ZIGBEE] Listing the neighbour table...");
+            size_t offset = append_neighbors(response, sizeof(response), 0, "ZBNEIGHBOR");
+            if(offset == 0) {
+                snprintf(response, sizeof(response), "+ZBNEIGHBOR:No neighbours found\r\n");
             }
             return response;
         }
@@ -384,7 +486,8 @@ namespace ZIGBEE {
     const char * at_get_help_string() {
         return R"EOF(
 Zigbee AT Commands:
-  AT+ZBLIST?          - List all paired Zigbee devices
+  AT+ZBLIST?          - List paired devices and devices on the network
+  AT+ZBNEIGHBORS?     - List the neighbour table (devices on our network)
   AT+ZBJOIN=<sec>     - Enable permit joining for specified seconds (0 to disable)
   AT+ZBSCAN=1         - Scan for nearby Zigbee networks (end devices)
   AT+ZBDEVICES=1      - Snapshot the devices bound to the network

@@ -25,13 +25,20 @@ lives in `zigbee/zigbee.ino` and is hooked into the template through the weak
 | Command | Description |
 |---|---|
 | `AT+ZBJOIN=<sec>` | Open the network for joining for `<sec>` seconds; `AT+ZBJOIN=0` closes it |
-| `AT+ZBLIST?` | List devices bound to the network (IEEE address, short address, endpoint) |
+| `AT+ZBLIST?` | List bound devices, then every device on the network (neighbour table) |
+| `AT+ZBNEIGHBORS?` | List the neighbour table only: who is on our network, with type, relationship, LQI and RSSI |
 | `AT+ZBSCAN=1` | Scan for nearby Zigbee networks |
 | `AT+ZBDEVICES=1` | Take a snapshot of the bound devices |
 | `AT+ZBDEVICES?` | Show the snapshot taken by `AT+ZBDEVICES=1` |
 
 The device exposes four endpoints: gateway (1), switch (2), light (3) and
 thermostat (4). On boot the network is open for 180 seconds so devices can join.
+
+A device that joins but binds nothing is in the neighbour table only, so
+`AT+ZBLIST?` reports both: bound devices (`Endpoint=`) and network members
+(`Rel=child`). The IEEE address of an ESP32-H2 is its base MAC with `FF:FE`
+inserted in the middle, so board `48:31:B7:C2:19:45` appears as
+`48:31:B7:FF:FE:C2:19:45`.
 
 The template's general commands (`AT`, `AT+HELP?`, `AT+RESET`, `AT+ERASE`,
 `AT+LOOP_DELAY`, `AT+VERBOSE`, and others) are also available. Run `AT+HELP?`
