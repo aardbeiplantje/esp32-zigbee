@@ -5811,8 +5811,40 @@ void IRAM_ATTR ledBlinkTimer() {
   portEXIT_CRITICAL_ISR(&led_timer_mux);
 }
 
+// LED colors for the ESP32-H2 Super Mini RGB LED, chosen by determine_led_state()
+#define LED_RGB_LEVEL 32 // 0-255 per channel, kept low, the WS2812 is bright
+enum { LED_RGB_NONE = 0, LED_RGB_RED, LED_RGB_GREEN, LED_RGB_BLUE, LED_RGB_MAGENTA, LED_RGB_CYAN };
+uint8_t led_rgb_color = LED_RGB_RED;
+
+#if defined(CONFIG_IDF_TARGET_ESP32H2)
+// ESP32-H2 Super Mini: the status LED on LED (GPIO8) is an addressable WS2812
+// RGB LED, not a plain PWM LED, so it is driven with rgbLedWrite() instead.
+uint8_t last_led_rgb = 0xFF;
+
+void led_rgb_update() {
+  uint8_t c = led_state ? led_rgb_color : LED_RGB_NONE;
+  if(c == last_led_rgb) {
+    return;
+  }
+  last_led_rgb = c;
+  uint8_t r = 0, g = 0, b = 0;
+  switch(c) {
+    case LED_RGB_RED:     r = LED_RGB_LEVEL; break;
+    case LED_RGB_GREEN:   g = LED_RGB_LEVEL; break;
+    case LED_RGB_BLUE:    b = LED_RGB_LEVEL; break;
+    case LED_RGB_MAGENTA: r = LED_RGB_LEVEL; b = LED_RGB_LEVEL; break;
+    case LED_RGB_CYAN:    g = LED_RGB_LEVEL * 2; b = LED_RGB_LEVEL; break; // more green, so it reads as cyan not blue
+    default: break;
+  }
+  rgbLedWrite((uint8_t)LED, r, g, b);
+}
+#endif // CONFIG_IDF_TARGET_ESP32H2
+
 // Helper function to set LED brightness (0-255 on ESP32, digital on/off on ESP8266)
 void set_led_brightness(int brightness) {
+  #if defined(CONFIG_IDF_TARGET_ESP32H2)
+  return; // the H2 RGB LED is driven by led_rgb_update()
+  #endif
   if(last_led_brightness == brightness) {
     return; // no change
   }
@@ -5850,8 +5882,8 @@ void setup_led() {
   // LED pin setup
   pinMode(LED, OUTPUT);
 
-  #if defined(SUPPORT_LED_BRIGHTNESS)
-  // ESP32 PWM setup
+  #if defined(SUPPORT_LED_BRIGHTNESS) && !defined(CONFIG_IDF_TARGET_ESP32H2)
+  // ESP32 PWM setup (not on H2, its LED is a WS2812, see led_rgb_update)
   ledc_clk_cfg_t t = ledcGetClockSource();
   LOG("[LED] LED PWM clock source: %d", t);
   // Setup LED PWM channel
@@ -5917,11 +5949,13 @@ int determine_led_state() {
     led_interval = LED_BLINK_INTERVAL_FAST;
     led_brightness_on = LED_BRIGHTNESS_HIGH;
     led_brightness_off = LED_BRIGHTNESS_LOW;
+    led_rgb_color = LED_RGB_BLUE;
   } else if (deviceConnected == 1) {
     // BLE device connected: slow blink until disconnected
     led_interval = LED_BLINK_INTERVAL_SLOW;
     led_brightness_on = LED_BRIGHTNESS_MEDIUM;
     led_brightness_off = LED_BRIGHTNESS_LOW;
+    led_rgb_color = LED_RGB_CYAN;
   #endif
   #ifdef WIFI_WPS
   } else if (wps_running) {
@@ -5929,6 +5963,7 @@ int determine_led_state() {
     led_interval = LED_BLINK_INTERVAL_QUICK;
     led_brightness_on = LED_BRIGHTNESS_HIGH;
     led_brightness_off = LED_BRIGHTNESS_DIM;
+    led_rgb_color = LED_RGB_MAGENTA;
   #endif // WIFI_WPS
   #ifdef SUPPORT_WIFI
   } else if (is_wifi_connected) {
@@ -5936,12 +5971,14 @@ int determine_led_state() {
     led_interval = 0; // No blinking, steady on
     led_brightness_on = LED_BRIGHTNESS_MEDIUM;
     led_brightness_off = LED_BRIGHTNESS_MEDIUM; // Same as on = steady
+    led_rgb_color = LED_RGB_GREEN;
   #endif // SUPPORT_WIFI
   } else {
     // Not connected: slowly blinking
     led_interval = LED_BLINK_INTERVAL_HALF;
     led_brightness_on = LED_BRIGHTNESS_LOW;
     led_brightness_off = LED_BRIGHTNESS_OFF;
+    led_rgb_color = LED_RGB_RED;
   }
   return led_interval;
 }
@@ -6196,10 +6233,11 @@ void setup_button() {
   #ifdef USE_BUTTON
   current_button = USE_BUTTON;
   #else
-  #ifdef LOOP_DELAY
+  #if defined(LOOP_DELAY) && !defined(CONFIG_IDF_TARGET_ESP32H2)
   // LOOP_DELAY is defined, we cant use GPIO_NUM_9 (builtin button) as it
   // is not supported as a wakeup source on ESP32c3/ESP32s3 with light sleep
-  // so we pick a different pin, GPIO3_NUM_3/A3
+  // so we pick a different pin, GPIO3_NUM_3/A3. The H2 BOOT button is GPIO9
+  // and is used as-is there.
   current_button = GPIO_NUM_3;
   #else
   current_button = BUTTON_BUILTIN;
@@ -7667,6 +7705,9 @@ void loop() {
   LOOP_D("[LED] Checking LED state and updating if needed");
   set_led_blink(determine_led_state());
   update_led_state();
+  #if defined(CONFIG_IDF_TARGET_ESP32H2)
+  led_rgb_update();
+  #endif
   #endif // LED
 
   #ifdef LOOP_DELAY
