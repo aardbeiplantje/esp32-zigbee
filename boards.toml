@@ -1,0 +1,13 @@
+# Boards for deploy.py. One table per physical board.
+#
+# The ESP32-H2 has native USB, so its USB serial number is its MAC: deploy.py
+# finds the board by that, with no reset and no esptool call.
+#   mac  = MAC as esptool prints it ("python3 deploy.py identify <port>")
+#   chip = esp32h2 (selects the arduino-cli FQBN and esptool --chip)
+#   role = COORDINATOR (builds the zigbee/ sketch)
+#   port = optional; used only when the board has no mac
+
+[boards.coordinator]
+mac  = "48:31:B7:C2:18:A8"
+chip = "esp32h2"
+role = "COORDINATOR"

@@ -1,163 +1,108 @@
-### Supported #define Options and Capabilities
+# esp-zigbee
 
-The firmware supports the following compile-time options and capabilities (set via `#define` or build flags):
+Firmware for an ESP32-H2 that runs as a **Zigbee coordinator** and is controlled
+over an AT-command interface (UART, or BLE via the Nordic UART Service). It is
+built on the ESP-AT template in `zigbee/esp-at.ino`; the Zigbee functionality
+lives in `zigbee/zigbee.ino` and is hooked into the template through the weak
+`PLUGINS::*` functions.
 
-- `VERBOSE` (default enabled): Enables verbose logging.
-- `DEBUG`: Enables debug logging.
-- `DEFAULT_HOSTNAME` (default: "uart"): Default device hostname.
-- `UART_AT` (default enabled): Enables UART AT command interface.
-- `BLUETOOTH_UART_AT` (default enabled): Enables Bluetooth UART AT command interface.
-- `BLUETOOTH_UART_DEVICE_NAME` (default: `DEFAULT_HOSTNAME`): Bluetooth device name.
-- `BLUETOOTH_UART_DEFAULT_PIN` (default: "1234"): Bluetooth pairing PIN (Classic BT).
-- `DEFAULT_NTP_SERVER` (default: "at.pool.ntp.org"): Default NTP server.
-- `DEFAULT_DNS_IPV4` (default: "1.1.1.1"): Default DNS for static IPv4.
-- `SUPPORT_NTP` (default enabled): Enables NTP support.
-- `SUPPORT_UDP` / `SUPPORT_TCP`: Enables UDP/TCP forwarding (if defined).
+## Layout
 
-### Supported AT Commands
+| Path | Purpose |
+|---|---|
+| `zigbee/zigbee.ino` | Zigbee coordinator: endpoints, permit-join, device list, `AT+ZB*` commands |
+| `zigbee/zigbee.h` | Zigbee plugin declarations and build-mode guard |
+| `zigbee/esp-at.ino` | ESP-AT template: AT parser, config storage, main loop |
+| `zigbee/common.{h,cpp}` | Logging and shared helpers |
+| `zigbee/partitions.csv` | Flash layout (includes Zigbee storage partitions) |
+| `boards.toml` | The boards: MAC, chip and role of each |
+| `deploy.py` | Build, flash and monitor (replaces the old `build.sh`) |
+| `ble_uart.pl`, `BLE_UART.md` | Perl terminal client for the BLE UART service |
+| `monitor.py` | Quick helper: enable permit-join for 90 s and print the log |
 
-The following AT commands are supported via UART, BLE, or Bluetooth (if enabled). Use `AT+?` for a quick command list or `AT+HELP?` for detailed help with descriptions and examples.
+## Zigbee AT commands
 
-#### Basic Commands
-- `AT` — Test AT startup
-- `AT?` — Test AT startup  
-- `AT+?` — Show quick command list
-- `AT+HELP?` — Show detailed help with descriptions
-- `AT+RESET` — Restart device
-- `AT+ERASE` — Erase all configuration, reset to factory defaults
-- `AT+ERASE=1` — Erase all configuration and restart immediately
+| Command | Description |
+|---|---|
+| `AT+ZBJOIN=<sec>` | Open the network for joining for `<sec>` seconds; `AT+ZBJOIN=0` closes it |
+| `AT+ZBLIST?` | List devices bound to the network (IEEE address, short address, endpoint) |
+| `AT+ZBSCAN=1` | Scan for nearby Zigbee networks |
+| `AT+ZBDEVICES=1` | Take a snapshot of the bound devices |
+| `AT+ZBDEVICES?` | Show the snapshot taken by `AT+ZBDEVICES=1` |
 
-#### UART Commands (when SUPPORT_UART1 enabled)
-- `AT+UART1=baud,data,parity,stop,rx,tx` — Configure UART1 parameters
-- `AT+UART1?` — Get current UART1 configuration
+The device exposes four endpoints: gateway (1), switch (2), light (3) and
+thermostat (4). On boot the network is open for 180 seconds so devices can join.
 
-#### BLE Commands (when BLUETOOTH_UART_AT enabled)
-- `AT+BLE_PIN=<pin>` / `AT+BLE_PIN?` — Set/get BLE PIN (6 digits)
-- `AT+BLE_SECURITY=<mode>` / `AT+BLE_SECURITY?` — Set/get BLE security mode
-- `AT+BLE_IO_CAP=<cap>` / `AT+BLE_IO_CAP?` — Set/get BLE IO capability
-- `AT+BLE_AUTH_REQ=<req>` / `AT+BLE_AUTH_REQ?` — Set/get authentication requirements
-- `AT+BLE_STATUS?` — Get BLE connection and security status
+The template's general commands (`AT`, `AT+HELP?`, `AT+RESET`, `AT+ERASE`,
+`AT+LOOP_DELAY`, `AT+VERBOSE`, and others) are also available. Run `AT+HELP?`
+on the device for the full list of what is compiled in.
 
-#### System Commands
-- `AT+LOOP_DELAY=<ms>` / `AT+LOOP_DELAY?` — Set/get main loop delay
-- `AT+VERBOSE=<0|1>` / `AT+VERBOSE?` — Enable/disable verbose logging (when VERBOSE enabled)
-- `AT+TIMELOG=<0|1>` / `AT+TIMELOG?` — Enable/disable time logging (when TIMELOG enabled)
-- `AT+LOG_UART=<0|1>` / `AT+LOG_UART?` — Enable/disable UART logging (when LOGUART enabled)
+## Boards
 
-**Note**: Commands with `?` are queries, commands with `=` set values. Many commands are conditionally compiled based on `#define` flags.
-## esp-at-template
+`boards.toml` has one table per board. The ESP32-H2 has native USB, so its USB
+serial number is its MAC, and `deploy.py` finds the board by that. No reset is
+needed to find it.
 
-This project provides a template for building and uploading ESP-AT firmware using Arduino CLI. It includes a flexible `build.sh` script for managing builds, uploads, and serial monitoring, with support for environment variable overrides and custom configuration. The template is designed to simplify development and deployment for ESP32-based AT firmware projects.
-
-## BLE UART Client
-
-The project includes `ble_uart.pl`, a Perl script that provides a BLE UART (Nordic UART Service) client for connecting to and communicating with ESP32 devices over Bluetooth Low Energy. This script allows you to:
-
-- Connect to one or more BLE devices implementing the Nordic UART Service (NUS)
-- Send and receive UART-style data over BLE interactively
-- Execute AT commands and see responses in real-time
-- Manage multiple simultaneous BLE connections
-- Run scripted commands from files
-- Support for colored terminal output and command history
-
-For detailed usage information and command reference, see the manual page:
-
-```bash
-perl ble_uart.pl --man
+```toml
+[boards.coordinator]
+mac  = "48:31:B7:C2:18:A8"
+chip = "esp32h2"
+role = "COORDINATOR"
 ```
 
-Or refer to the [BLE_UART.md](BLE_UART.md) documentation.
+To add a board, plug it in and run `python3 deploy.py identify <port>`. It prints
+the entry to paste into `boards.toml`.
 
-### build.sh Commands
+## Building and flashing
 
-The `build.sh` script supports the following commands (pass as the first argument):
+Requires Python 3.11+, `pyserial`, and `arduino-cli`.
 
-- `build` or `compile`: Update platform/libs and build the project.
-- `update`: Update platform/libs only (no build).
-- `upload`: Upload the compiled firmware to the device.
-- `monitor`: Open a serial monitor to the device.
-- `deploy`: Build and upload the firmware.
-- *(no argument or unknown command)*: Update, build, upload, and monitor in sequence.
+```bash
+python3 deploy.py update                  # install the esp32 core and SerialCommands
+python3 deploy.py list                    # ports, and the board on each
+python3 deploy.py build coordinator       # compile into dist/esp32h2/zigbee/
+python3 deploy.py flash coordinator       # flash the last build
+python3 deploy.py deploy coordinator --monitor   # build, flash, then show the serial output
+python3 deploy.py monitor coordinator     # serial output, prefixed with the board name
+python3 deploy.py deploy all              # every board in boards.toml that is connected
+```
+
+`build.sh` commands map to `deploy.py` as: `build` → `build`, `upload` → `flash`,
+`monitor` → `monitor`, `deploy` → `deploy`, `update` → `update`, `all` → `deploy --monitor`.
+
+### Environment variables
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ARDUINO_DIRECTORIES_DATA` | `./.arduino15` if present, else arduino-cli's | Arduino data directory |
+| `DEBUG` | unset | Set to `1` to add `-DDEBUG` |
+| `VERBOSE` | `1` | Set to `0` to omit `-DVERBOSE` |
+| `EXTRA_FLAGS` | (none) | Extra compiler flags, appended as-is (also `--flags`) |
 
 Example:
 
-```
-bash ./build.sh build
-bash ./build.sh upload
-bash ./build.sh monitor
+```bash
+DEBUG=1 python3 deploy.py deploy coordinator
 ```
 
-## BUILD
+## Host tools
 
+### `monitor.py`
 
-### Environment Variables for `build.sh`
+Opens `/dev/ttyACM0` at 460800 baud, sends `AT+ZBJOIN=90` and prints the
+device's output for 95 seconds. Edit the port and timing inside the script if
+your setup differs.
 
-You can customize the build and upload process using the following environment variables:
+### `ble_uart.pl`
 
-- `MODULE` (default: `esp-at`): The Arduino project directory or sketch name.
-- `DEV_PLATFORM` (default: `esp32:esp32`): Arduino platform to use.
-- `DEV_BOARD` (default: `esp32:esp32:esp32c3`): Board identifier for arduino-cli.
-- `DEV_PORT` (default: `/dev/ttyACM0`): Serial port for upload/monitor.
-- `DEV_BOARD_BAUDRATE` (default: `460800`): Baudrate for monitor.
-- `ARDUINO_DIRECTORIES_DATA` (default: `$HERE/.arduino15`): Arduino data directory.
-- `TMPDIR` (default: `/var/tmp`): Temporary directory.
-- `DEV_URLS` (default: `https://dl.espressif.com/dl/package_esp32_index.json`): Additional URLs for board manager.
-- `DEV_UPDATE` (default: `0`): Set to `1` to update platform/libs.
-- `DEBUG`: Set to `1` to add `-DDEBUG` flag.
-- `VERBOSE`: Set to any value to add `-DVERBOSE` flag.
-- `DEFAULT_NTP_SERVER`: Set to override default NTP server.
-- `DEFAULT_HOSTNAME`: Set to override default hostname.
-- `DEFAULT_BLUETOOTH_NAME`: Set to override default Bluetooth name.
-- `DEFAULT_BLUETOOTH_PIN`: Set to override default Bluetooth PIN.
-
-Example usage:
-
-```
-DEV_PORT=/dev/ttyUSB0 DEFAULT_HOSTNAME=myesp DEBUG=1 bash ./build.sh build
-```
-
-First update platform/modules:
-```
-DEV_PORT=/dev/ttyUSB0 bash ./build.sh update
-```
-
-Then build:
-```
-DEV_PORT=/dev/ttyUSB0 bash ./build.sh build
-```
-
-## BLE UART Client Tool
-
-The repository includes `ble_uart.pl`, a Perl script that provides a terminal interface for communicating with BLE devices that implement the Nordic UART Service (NUS). This tool can be used to interact with ESP32 devices running the BLE UART AT firmware.
-
-### Usage
+A terminal client for devices that expose the Nordic UART Service over BLE.
+See `BLE_UART.md` or run `perl ble_uart.pl --man`.
 
 ```bash
-./ble_uart.pl --help                # Show full documentation
-./ble_uart.pl XX:XX:XX:XX:XX:XX    # Connect to a BLE device
+./ble_uart.pl --help
+./ble_uart.pl XX:XX:XX:XX:XX:XX    # connect to a device
 ```
 
-### Available Commands
+## License
 
-Once connected, you can use these commands in the interactive terminal:
-
-- `/help` — Show available commands
-- `/connect XX:XX:XX:XX:XX:XX` — Connect to a BLE device
-- `/disconnect` — Disconnect from current device
-- `/switch XX:XX:XX:XX:XX:XX` — Switch between connected devices
-- `/info` — Read device name using the Device Name characteristic (00002a00)
-- `/primary` — Discover primary services
-- `/char-desc` — Discover characteristic descriptors
-- `/debug on|off` — Enable/disable debug logging
-- `/exit` — Exit the application
-
-### Device Information
-
-The `/info` command reads the Device Name characteristic (UUID: 00002a00-0000-1000-8000-00805f9b34fb) to display basic device information:
-
-```
-> /info
-Device Name: ESP32-BLE-Device
-```
-
-This is useful for quickly identifying connected devices and verifying the connection is working properly.
+Released into the public domain under the Unlicense. See `LICENSE`.

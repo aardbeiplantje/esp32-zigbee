@@ -29,7 +29,7 @@
  * For more information, please refer to <https://unlicense.org>
  */
 
-// Zigbee Coordinator mode is set via compiler flags from build.sh: -DZIGBEE_MODE_ZCZR
+// Zigbee Coordinator mode is set via compiler flags from deploy.py: -DZIGBEE_MODE_ZCZR
 #include <zigbee.h>
 #include <common.h>
 
@@ -49,31 +49,23 @@ zigbee_role_t role = ZIGBEE_COORDINATOR;  // Confusing but COORDINATOR=0 in Ardu
 zigbee_role_t role = ZIGBEE_END_DEVICE;  // Confusing but END_DEVICE=2 in Arduino lib
 #endif
 
-// Global to track if this is our first call to Zigbee.begin() - it may be reassigning role!
-static bool zigbee_begin_called = false;
-
-
 namespace ZIGBEE {
-    // Global variables to store valve data for I2C requests
-    RTC_DATA_ATTR float currentTemp = 0;
-    RTC_DATA_ATTR bool scan_in_progress = false;
-    RTC_DATA_ATTR bool device_discovery_in_progress = false;
-    RTC_DATA_ATTR unsigned long permit_join_end_time = 0;
-    RTC_DATA_ATTR unsigned long last_permit_join_log_time = 0;
+    // Plain RAM, not RTC: these are millis()-based or per-session state, and
+    // RTC memory survives software resets while millis() restarts at zero.
+    bool scan_in_progress = false;
+    bool device_discovery_in_progress = false;
+    unsigned long permit_join_end_time = 0;
+    unsigned long last_permit_join_log_time = 0;
     ZigbeeGateway zbGw = ZigbeeGateway(1);
     ZigbeeSwitch zbSwitch = ZigbeeSwitch(2);
     ZigbeeLight zbLight = ZigbeeLight(3);
     ZigbeeThermostat zbThermostat = ZigbeeThermostat(4);
 
-    // Structure to hold discovered device information
+    // Information about a bound device, as reported by the Zigbee stack
     struct DiscoveredDevice {
         uint64_t ieee_addr;
         uint16_t short_addr;
         uint8_t endpoint;
-        bool is_trv;
-        bool is_temp_sensor;
-        bool has_thermostat_cluster;
-        bool has_temp_cluster;
     };
 
     std::vector<DiscoveredDevice> discovered_devices;
@@ -202,14 +194,6 @@ namespace ZIGBEE {
             std::list<zb_device_params_t *> eps = zbGw.getBoundDevices();
             LOG("[ZIGBEE] Permit joining window closed - Final device count: %d", eps.size());
         }
-
-        if(Zigbee.connected()) {
-            // Only print connected status for coordinators/routers, end devices won't be able to connect until they join a network
-            LOG("[ZIGBEE] Device is connected to a network");
-        } else {
-            return;
-        }
-        return;
     }
 
     void scan_eps() {
@@ -220,8 +204,9 @@ namespace ZIGBEE {
     }
 
     void discover_devices() {
-        // Discover all devices on the network and identify TRVs and temperature sensors
-        LOG("[ZIGBEE] Starting device discovery for TRVs and temperature sensors...");
+        // List the devices bound to this network (no ZCL requests: those cannot
+        // be made safely from the AT command handler context)
+        LOG("[ZIGBEE] Starting device discovery...");
         device_discovery_in_progress = true;
         discovered_devices.clear();
 
@@ -252,15 +237,6 @@ namespace ZIGBEE {
             }
             dev.short_addr = ep->short_addr;
             dev.endpoint = ep->endpoint;
-            dev.is_trv = false;
-            dev.is_temp_sensor = false;
-            dev.has_thermostat_cluster = false;
-            dev.has_temp_cluster = false;
-
-            // Note: Actual cluster detection would require sending ZCL requests
-            // which cannot be safely done from the AT command handler context
-            // In a real implementation, cluster info would be cached during init
-            // or discovered asynchronously through ZCL attribute responses
 
             discovered_devices.push_back(dev);
             LOG("[ZIGBEE] Found device: Short=0x%04X, Endpoint=%d", ep->short_addr, ep->endpoint);
@@ -279,18 +255,9 @@ namespace ZIGBEE {
         }
 
         for (const auto &dev : discovered_devices) {
-            const char *type_str = "";
-            if (dev.is_trv && dev.is_temp_sensor) {
-                type_str = "TRV+TEMP";
-            } else if (dev.is_trv) {
-                type_str = "TRV";
-            } else if (dev.is_temp_sensor) {
-                type_str = "TEMP";
-            }
-
             offset += snprintf(response + offset, resp_len - offset,
-                "+ZBDEVICES:IEEE=0x%016llX,Short=0x%04X,Endpoint=%d,Type=%s\r\n",
-                dev.ieee_addr, dev.short_addr, dev.endpoint, type_str);
+                "+ZBDEVICES:IEEE=0x%016llX,Short=0x%04X,Endpoint=%d\r\n",
+                dev.ieee_addr, dev.short_addr, dev.endpoint);
 
             if (offset >= resp_len) {
                 LOG("[ZIGBEE] Device list response buffer near full, truncating");
@@ -377,7 +344,7 @@ namespace ZIGBEE {
             }
             return AT_R("ERROR:INVALID_PARAM");
         }
-        // AT+ZBDEVICES=1 - Discover TRVs and temperature sensors
+        // AT+ZBDEVICES=1 - Snapshot the bound devices for AT+ZBDEVICES?
         else if (p = COMMON::at_cmd_check("AT+ZBDEVICES=", at_cmd, cmd_len)) {
             if (strcmp(p, "1") == 0) {
                 LOG("[ZIGBEE] Device discovery triggered via AT command");
@@ -404,8 +371,8 @@ Zigbee AT Commands:
   AT+ZBLIST?          - List all paired Zigbee devices
   AT+ZBJOIN=<sec>     - Enable permit joining for specified seconds (0 to disable)
   AT+ZBSCAN=1         - Scan for nearby Zigbee networks (end devices)
-  AT+ZBDEVICES=1      - Discover and scan for TRVs and temperature sensors
-  AT+ZBDEVICES?       - List discovered TRVs and temperature sensors
+  AT+ZBDEVICES=1      - Snapshot the devices bound to the network
+  AT+ZBDEVICES?       - List the snapshot taken by AT+ZBDEVICES=1
 )EOF";
     }
 }

@@ -64,6 +64,7 @@
 
 #include <Zigbee.h>
 #include <string.h>
+#include <list>
 #include <vector>
 #include <cstdint>
 
@@ -77,9 +78,6 @@ namespace PLUGINS {
 
 namespace ZIGBEE {
     void init();
-    void enable_pairing(uint32_t timeout_ms = 60000);
-    void disable_pairing();
-    std::list<zb_device_params_t *> get_bound_eps();
     void scan_eps();
     void discover_devices();
 }

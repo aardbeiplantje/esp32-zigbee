@@ -5,3 +5,4 @@ dist/
 *.txt
 a.out
 **/build
+.build/

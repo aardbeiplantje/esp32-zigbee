@@ -7393,6 +7393,12 @@ void setup() {
       LOG("[SETUP] Re-setup plugins after deep sleep");
       PLUGINS::setup();
     }
+    // plugins initialize, must run here too: this branch returns early
+    // and would otherwise leave plugins (e.g. Zigbee) uninitialized
+    if(PLUGINS::initialize){
+      LOG("[SETUP] Re-initializing plugins after deep sleep");
+      PLUGINS::initialize();
+    }
     #endif // SUPPORT_PLUGINS
 
     LOG("[SETUP] Re-setup done after deep sleep");
