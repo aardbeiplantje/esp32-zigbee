@@ -16,7 +16,6 @@ lives in `zigbee/zigbee.ino` and is hooked into the template through the weak
 | `zigbee/common.{h,cpp}` | Logging and shared helpers |
 | `zigbee/partitions.csv` | Flash layout (includes Zigbee storage partitions) |
 | `boards.toml` | The boards: MAC, chip and role of each |
-| `docs/pinout.md`, `docs/diagram-3200.png` | Pinout of the ESP32-H2 Super Mini board, with the pins this firmware uses |
 | `deploy.py` | Build, flash and monitor (replaces the old `build.sh`) |
 | `ble_uart.pl`, `BLE_UART.md` | Perl terminal client for the BLE UART service |
 | `monitor.py` | Quick helper: enable permit-join for 90 s and print the log |
@@ -40,9 +39,8 @@ on the device for the full list of what is compiled in.
 
 ## Boards
 
-The boards are ESP32-H2 Super Mini modules. See [`docs/pinout.md`](docs/pinout.md)
-for the pinout and the pins this firmware uses (BOOT button on GPIO9, RGB status
-LED on GPIO8).
+The boards are ESP32-H2 Super Mini modules. The BOOT button is GPIO9 and the RGB
+status LED is GPIO8 (WS2812, driven with `rgbLedWrite()`).
 
 `boards.toml` has one table per board. The ESP32-H2 has native USB, so its USB
 serial number is its MAC, and `deploy.py` finds the board by that. No reset is
