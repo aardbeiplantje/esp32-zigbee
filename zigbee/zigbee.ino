@@ -120,24 +120,40 @@ namespace ZIGBEE {
         LOG("[ZIGBEE] Adding thermostat endpoint with ID %d", zbThermostat.getEndpoint());
         Zigbee.addEndpoint(&zbThermostat);
 
+#if defined(ZIGBEE_MODE_ED)
+        // End device: it joins a network that is open for joining; it does not open one itself
+        LOG("[ZIGBEE] End device: joining a network (open it on the coordinator with AT+ZBJOIN=<sec>)");
+#else
         // wait for pairing/joining during 180s after reboot
         LOG("[ZIGBEE] Setting open network for 180 seconds after reboot to allow joining");
         Zigbee.setRebootOpenNetwork(180);
+#endif
         LOG("[ZIGBEE] About to call Zigbee.begin() with role=%d  (ZIGBEE_COORDINATOR=%d, ZIGBEE_END_DEVICE=%d)", role, ZIGBEE_COORDINATOR, ZIGBEE_END_DEVICE);
         if(!Zigbee.begin(role)) {
             LOG("[ZIGBEE] Failed to initialize Zigbee stack");
             return;
         }
         LOG("[ZIGBEE] Zigbee stack initialized successfully");
+#if defined(ZIGBEE_MODE_ED)
+        LOG("[ZIGBEE] *** ESP32H2 is an END DEVICE - waiting to join a network ***");
+#else
         LOG("[ZIGBEE] *** ESP32H2 is now the COORDINATOR - network ready for devices to join ***");
         LOG("[ZIGBEE] Enable pairing with: AT+ZBJOIN=60");
+#endif
         // Log network diagnostics
         delay(100);  // Give stack time to settle
         LOG("[ZIGBEE] Stack state check: connected=%s", Zigbee.connected() ? "YES" : "NO");
-        LOG("[ZIGBEE] Actual role=0 is COORDINATOR, role=2 is END_DEVICE in Arduino lib");
     }
 
     void loop() {
+#if defined(ZIGBEE_MODE_ED)
+        // log each change of the join state (the stack joins in the background)
+        static int8_t last_connected = -1;
+        if(Zigbee.connected() != (last_connected == 1)) {
+            last_connected = Zigbee.connected() ? 1 : 0;
+            LOG("[ZIGBEE] Network state: %s", last_connected ? "JOINED" : "NOT JOINED");
+        }
+#endif
         if(scan_in_progress) {
             int16_t zigbee_scan_status = Zigbee.scanComplete();
             if (zigbee_scan_status < 0) {

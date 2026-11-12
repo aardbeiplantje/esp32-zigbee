@@ -33,7 +33,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 BOARDS_FILE = os.path.join(HERE, "boards.toml")
 DIST = os.path.join(HERE, "dist")
 BUILD_CACHE = os.path.join(HERE, ".build")
-ROLES = ("COORDINATOR",)
+ROLES = ("COORDINATOR", "ENDDEVICE")
 FLASH_BAUD = 460800      # native USB: the transfer does not depend on it
 MONITOR_BAUD = 115200    # the firmware's serial console (esp-at.ino setup)
 
@@ -54,9 +54,11 @@ CHIPS = {
         "fqbn": "esp32:esp32:esp32h2",
         "esptool": "esp32/tools/esptool_py/*/esptool",
         "esptool_chip": "esp32h2",
-        "flags": "-DARDUINO_USB_MODE=1 -DARDUINO_USB_CDC_ON_BOOT=1 -D_ARDUINO_BLE_H_ -DZIGBEE_MODE_ZCZR",
-        "board_options": ("PartitionScheme=no_ota", "ZigbeeMode=zczr"),
-        "sketches": {"COORDINATOR": "zigbee"},
+        "flags": "-DARDUINO_USB_MODE=1 -DARDUINO_USB_CDC_ON_BOOT=1 -D_ARDUINO_BLE_H_",
+        "board_options": ("PartitionScheme=no_ota",),
+        # the core's ZigbeeMode option sets -DZIGBEE_MODE_ZCZR (coordinator) or -DZIGBEE_MODE_ED
+        "zigbee_mode": {"COORDINATOR": "zczr", "ENDDEVICE": "ed"},
+        "sketches": {"COORDINATOR": "zigbee", "ENDDEVICE": "zigbee"},
         "layout": (
             ("0x0", "{sketch}.ino.bootloader.bin"),
             ("0x8000", "{sketch}.ino.partitions.bin"),
@@ -278,13 +280,19 @@ def sketch_name(board):
     return CHIPS[board["chip"]]["sketches"][board["role"]]
 
 
+def out_name(board):
+    """Output folder name: the sketch name, with the role appended for every role but the coordinator."""
+    name = sketch_name(board)
+    return name if board["role"] == "COORDINATOR" else f"{name}-{board['role'].lower()}"
+
+
 def out_dir(board):
-    return os.path.join(DIST, board["chip"], sketch_name(board))
+    return os.path.join(DIST, board["chip"], out_name(board))
 
 
 def build_flags(board, args):
     """Compiler defines: the chip's, -DDEBUG with DEBUG=1, -DVERBOSE unless VERBOSE=0, then EXTRA_FLAGS and --flags."""
-    flags = [CHIPS[board["chip"]]["flags"]]
+    flags = [CHIPS[board["chip"]]["flags"], f"-DZIGBEE_MODE_{CHIPS[board['chip']]['zigbee_mode'][board['role']].upper()}"]
     if os.environ.get("DEBUG") == "1":
         flags.append("-DDEBUG")
     if os.environ.get("VERBOSE", "1") == "1":
@@ -320,11 +328,11 @@ def build(board, flags, args):
     arduino_data_dir()
     cmd = ["arduino-cli", "compile", "-b", chip["fqbn"],
            "--output-dir", dst,
-           "--build-path", os.path.join(BUILD_CACHE, f"{board['chip']}-{sketch}"),
+           "--build-path", os.path.join(BUILD_CACHE, f"{board['chip']}-{out_name(board)}"),
            "--jobs", "16"]
     for k, v in build_properties(flags).items():
         cmd += ["--build-property", f"{k}={v}"]
-    for opt in chip["board_options"]:
+    for opt in chip["board_options"] + (f"ZigbeeMode={chip['zigbee_mode'][board['role']]}",):
         cmd += ["--board-options", opt]
     cmd.append(os.path.join(HERE, sketch))
     if args.verbose:
