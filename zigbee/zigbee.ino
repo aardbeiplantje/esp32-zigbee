@@ -63,10 +63,13 @@ namespace ZIGBEE {
 
     // defined below, used by loop()
     size_t count_children();
+    static bool zcl_raw_seen(uint8_t bufid);   // defined below, registered in init()
 
     // The coordinator is always short address 0x0000; our light is endpoint 3.
     #define ZB_COORDINATOR_SHORT_ADDR 0x0000
     #define ZB_LIGHT_ENDPOINT 3
+    // esp_zb_bdb_open_network() takes a uint8_t number of seconds
+    #define ZB_PERMIT_JOIN_MAX_SEC 254
 
     // State of our own light endpoint, shown on the status LED
     bool light_on = false;
@@ -187,6 +190,9 @@ namespace ZIGBEE {
             return;
         }
         LOG("[ZIGBEE] Zigbee stack initialized successfully");
+#if !defined(ZIGBEE_MODE_ED)
+        esp_zb_raw_command_handler_register(zcl_raw_seen);
+#endif
 #if defined(ZIGBEE_MODE_ED)
         LOG("[ZIGBEE] *** ESP32H2 is an END DEVICE - waiting to join a network ***");
 #else
@@ -198,7 +204,148 @@ namespace ZIGBEE {
         LOG("[ZIGBEE] Stack state check: connected=%s", Zigbee.connected() ? "YES" : "NO");
     }
 
+    // ---- Probing and binding a remote -----------------------------------
+    // Ask a device for its endpoints and clusters (AT+ZBEPS=), then bind one
+    // of its clients to our light (AT+ZBBIND=). Requests are sent from loop(),
+    // never from a callback, so the Zigbee lock is taken once at a time.
+    static uint16_t probe_addr = 0;
+    static uint8_t probe_eps[8];
+    static uint8_t probe_ep_count = 0;
+    static uint8_t probe_next = 0;
+    static bool probe_send_ep = false;     // active endpoint request due
+    static bool probe_send_sd = false;     // simple descriptor request due
+    static bool probe_done = false;
+    static char probe_report[600];
+    static size_t probe_len = 0;
+
+    static void probe_append(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+    static void probe_append(const char *fmt, ...) {
+        if(probe_len >= sizeof(probe_report)) return;
+        va_list ap;
+        va_start(ap, fmt);
+        int n = vsnprintf(probe_report + probe_len, sizeof(probe_report) - probe_len, fmt, ap);
+        va_end(ap);
+        if(n > 0) probe_len += (size_t)n;
+        if(probe_len >= sizeof(probe_report)) probe_len = sizeof(probe_report) - 1;
+    }
+
+    static void simple_desc_cb(esp_zb_zdp_status_t st, esp_zb_af_simple_desc_1_1_t *sd, void *ctx) {
+        if(st == ESP_ZB_ZDP_STATUS_SUCCESS && sd) {
+            probe_append("+ZBEPS:EP=%d,Profile=0x%04X,Device=0x%04X,In=",
+                sd->endpoint, sd->app_profile_id, sd->app_device_id);
+            for(int i = 0; i < sd->app_input_cluster_count; i++)
+                probe_append("%04X ", sd->app_cluster_list[i]);
+            probe_append(" Out=");
+            for(int i = 0; i < sd->app_output_cluster_count; i++)
+                probe_append("%04X ", sd->app_cluster_list[sd->app_input_cluster_count + i]);
+            probe_append("\r\n");
+        } else {
+            probe_append("+ZBEPS:EP=%d,simple descriptor failed (status %d)\r\n", probe_eps[probe_next], st);
+        }
+        probe_next++;
+        if(probe_next < probe_ep_count) {
+            probe_send_sd = true;
+        } else {
+            probe_done = true;
+            probe_append("+ZBEPS:done\r\n");
+        }
+    }
+
+    static void active_ep_cb(esp_zb_zdp_status_t st, uint8_t count, uint8_t *list, void *ctx) {
+        probe_len = 0;
+        if(st != ESP_ZB_ZDP_STATUS_SUCCESS) {
+            probe_append("+ZBEPS:active endpoint request failed (status %d)\r\n", st);
+            probe_done = true;
+            return;
+        }
+        probe_ep_count = count > sizeof(probe_eps) ? sizeof(probe_eps) : count;
+        memcpy(probe_eps, list, probe_ep_count);
+        probe_next = 0;
+        probe_append("+ZBEPS:Device 0x%04X has %d endpoints\r\n", probe_addr, probe_ep_count);
+        if(probe_ep_count == 0) {
+            probe_done = true;
+        } else {
+            probe_send_sd = true;
+        }
+    }
+
+    // A bind request to a sleeping device times out after 5 s, because the device
+    // only listens for a moment after a button press. So keep resending it, every
+    // BIND_RETRY_MS, until the device answers OK or BIND_GIVE_UP_MS has passed.
+    #define BIND_RETRY_MS    6000
+    #define BIND_GIVE_UP_MS  120000
+    static bool bind_pending = false;
+    static bool bind_send_now = false;
+    static esp_zb_zdo_bind_req_param_t bind_req;
+    static unsigned long bind_next_send = 0;
+    static unsigned long bind_started = 0;
+    static uint16_t bind_target = 0;
+
+    // Every ZCL frame the stack receives passes here first. We only log that a
+    // frame arrived; returning false lets the stack handle it as usual.
+    static uint32_t zcl_frames_seen = 0;
+    static bool zcl_raw_seen(uint8_t bufid) {
+        zcl_frames_seen++;
+        LOG("[ZIGBEE] ZCL frame received (#%u, buffer %u)", zcl_frames_seen, bufid);
+        return false;
+    }
+
+    static void bind_cb(esp_zb_zdp_status_t st, void *ctx) {
+        if(st == ESP_ZB_ZDP_STATUS_SUCCESS) {
+            LOG("[ZIGBEE] Bind OK: 0x%04X is bound to our light endpoint", bind_target);
+            bind_pending = false;
+        } else {
+            LOG("[ZIGBEE] Bind to 0x%04X not answered (status %d), retrying", bind_target, st);
+        }
+    }
+
+    // Sent from loop(): the requests need the Zigbee lock
+    static void probe_service() {
+        if(bind_pending) {
+            unsigned long now = millis();
+            if(now - bind_started > BIND_GIVE_UP_MS) {
+                LOG("[ZIGBEE] Giving up on binding 0x%04X after %d s", bind_target, BIND_GIVE_UP_MS / 1000);
+                bind_pending = false;
+            } else if(bind_send_now || now >= bind_next_send) {
+                bind_send_now = false;
+                bind_next_send = now + BIND_RETRY_MS;
+                if(esp_zb_lock_acquire(pdMS_TO_TICKS(1000))) {
+                    esp_zb_zdo_device_bind_req(&bind_req, bind_cb, NULL);
+                    esp_zb_lock_release();
+                }
+            }
+        }
+        if(probe_send_ep) {
+            probe_send_ep = false;
+            esp_zb_zdo_active_ep_req_param_t req;
+            memset(&req, 0, sizeof(req));
+            req.addr_of_interest = probe_addr;
+            if(esp_zb_lock_acquire(pdMS_TO_TICKS(1000))) {
+                esp_zb_zdo_active_ep_req(&req, active_ep_cb, NULL);
+                esp_zb_lock_release();
+            } else {
+                probe_append("+ZBEPS:could not take the Zigbee lock\r\n");
+                probe_done = true;
+            }
+        }
+        if(probe_send_sd) {
+            probe_send_sd = false;
+            esp_zb_zdo_simple_desc_req_param_t req;
+            memset(&req, 0, sizeof(req));
+            req.addr_of_interest = probe_addr;
+            req.endpoint = probe_eps[probe_next];
+            if(esp_zb_lock_acquire(pdMS_TO_TICKS(1000))) {
+                esp_zb_zdo_simple_desc_req(&req, simple_desc_cb, NULL);
+                esp_zb_lock_release();
+            } else {
+                probe_append("+ZBEPS:could not take the Zigbee lock\r\n");
+                probe_done = true;
+            }
+        }
+    }
+
     void loop() {
+        probe_service();
 #if defined(ZIGBEE_MODE_ED)
         // log each change of the join state (the stack joins in the background)
         static int8_t last_connected = -1;
@@ -478,6 +625,88 @@ namespace ZIGBEE {
             }
             return response;
         }
+        // AT+ZBINFO? - Our own network: PAN ID, channel, address, permit-join state
+        else if (p = COMMON::at_cmd_check("AT+ZBINFO?", at_cmd, cmd_len)) {
+            if (!Zigbee.started()) {
+                return AT_R("+ZBINFO:stack not started");
+            }
+            esp_zb_ieee_addr_t ext_pan = {0};
+            esp_zb_get_extended_pan_id(ext_pan);
+            long permit_left = 0;
+            if (permit_join_end_time > 0 && millis() < permit_join_end_time) {
+                permit_left = (permit_join_end_time - millis()) / 1000;
+            }
+            snprintf(response, sizeof(response),
+                "+ZBINFO:Role=%s,Connected=%s,PANID=0x%04X,ExtPANID=%02X:%02X:%02X:%02X:%02X:%02X:%02X:%02X,"
+                "Channel=%d,Short=0x%04X,PermitJoin=%lds\r\n",
+                role == ZIGBEE_COORDINATOR ? "coordinator" : (role == ZIGBEE_ROUTER ? "router" : "end-device"),
+                Zigbee.connected() ? "yes" : "no",
+                esp_zb_get_pan_id(),
+                ext_pan[7], ext_pan[6], ext_pan[5], ext_pan[4], ext_pan[3], ext_pan[2], ext_pan[1], ext_pan[0],
+                esp_zb_get_current_channel(), esp_zb_get_short_address(), permit_left);
+            return response;
+        }
+        // AT+ZBEPS=<short> - Ask a device for its endpoints and clusters; read with AT+ZBEPS?
+        else if (p = COMMON::at_cmd_check("AT+ZBEPS=", at_cmd, cmd_len)) {
+            unsigned int addr = 0;
+            if (sscanf(p, "%x", &addr) != 1) {
+                return AT_R("+ERROR: Use AT+ZBEPS=<short address in hex, e.g. 74C5>");
+            }
+            probe_addr = (uint16_t)addr;
+            probe_len = 0;
+            probe_done = false;
+            probe_send_ep = true;
+            snprintf(response, sizeof(response), "+ZBEPS:probing 0x%04X, read it with AT+ZBEPS?\r\nOK", probe_addr);
+            return response;
+        }
+        else if (p = COMMON::at_cmd_check("AT+ZBEPS?", at_cmd, cmd_len)) {
+            if (!probe_done) {
+                return AT_R("+ZBEPS:not ready yet, try again in a second");
+            }
+            probe_report[probe_len] = 0;
+            return probe_report;
+        }
+        // AT+ZBBIND=<short>,<src_ep> - Bind the remote's On/Off client on src_ep to our light
+        else if (p = COMMON::at_cmd_check("AT+ZBBIND=", at_cmd, cmd_len)) {
+            unsigned int addr = 0, src_ep = 0;
+            if (sscanf(p, "%x,%u", &addr, &src_ep) != 2) {
+                return AT_R("+ERROR: Use AT+ZBBIND=<short hex>,<endpoint>, e.g. AT+ZBBIND=74C5,1");
+            }
+            // the remote's IEEE address comes from our neighbour table
+            Neighbor nbrs[16];
+            size_t n = get_neighbors(nbrs, 16);
+            bool found = false;
+            esp_zb_zdo_bind_req_param_t req;
+            memset(&req, 0, sizeof(req));
+            for (size_t i = 0; i < n; i++) {
+                if (nbrs[i].short_addr == (uint16_t)addr) {
+                    memcpy(req.src_address, nbrs[i].ieee_addr, 8);
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                return AT_R("+ERROR: That device is not on our network (see AT+ZBNEIGHBORS?)");
+            }
+            esp_zb_ieee_addr_t my_ieee;
+            esp_zb_get_long_address(my_ieee);
+            req.src_endp = (uint8_t)src_ep;
+            req.cluster_id = ESP_ZB_ZCL_CLUSTER_ID_ON_OFF;
+            req.dst_addr_mode = ESP_ZB_ZDO_BIND_DST_ADDR_MODE_64_BIT_EXTENDED;
+            memcpy(req.dst_address_u.addr_long, my_ieee, 8);
+            req.dst_endp = ZB_LIGHT_ENDPOINT;
+            req.req_dst_addr = (uint16_t)addr;
+            // loop() sends it now and keeps resending until the device answers
+            bind_req = req;
+            bind_target = (uint16_t)addr;
+            bind_pending = true;
+            bind_send_now = true;
+            bind_started = millis();
+            snprintf(response, sizeof(response),
+                "+ZBBIND:retrying 0x%04X endpoint %u -> our light endpoint %d for up to %d s, watch the log for 'Bind OK'\r\nOK",
+                (uint16_t)addr, src_ep, ZB_LIGHT_ENDPOINT, BIND_GIVE_UP_MS / 1000);
+            return response;
+        }
         // AT+ZBTOGGLE[=<short_addr>] - Toggle a light, the same as a long button press
         else if (p = COMMON::at_cmd_check("AT+ZBTOGGLE=", at_cmd, cmd_len)) {
             unsigned int short_addr = 0;
@@ -514,11 +743,18 @@ namespace ZIGBEE {
             int timeout_sec = 0;
             if (sscanf(p, "%d", &timeout_sec) >= 1) {
                 if (timeout_sec > 0) {
+                    // openNetwork() takes a uint8_t: anything over 255 wraps, so
+                    // AT+ZBJOIN=280 would really open the network for 24 seconds
+                    // while we reported 280. Clamp instead, and report the truth.
+                    if (timeout_sec > ZB_PERMIT_JOIN_MAX_SEC) {
+                        LOG("[ZIGBEE] Permit join time %d capped to %d seconds", timeout_sec, ZB_PERMIT_JOIN_MAX_SEC);
+                        timeout_sec = ZB_PERMIT_JOIN_MAX_SEC;
+                    }
                     LOG("[ZIGBEE] Enabling permit joining for %d seconds", timeout_sec);
                     LOG("[ZIGBEE] *** PERMIT JOINING ENABLED - Put your devices in pairing mode NOW ***");
                     permit_join_end_time = millis() + (timeout_sec * 1000);
                     last_permit_join_log_time = 0;  // Reset to log immediately
-                    Zigbee.openNetwork(timeout_sec);
+                    Zigbee.openNetwork((uint8_t)timeout_sec);
                     LOG("[ZIGBEE] openNetwork(%d) called, waiting for join attempts...", timeout_sec);
                     snprintf(response, sizeof(response), "+ZBJOIN:permit_join_enabled,%d\r\nOK", timeout_sec);
                 } else {
@@ -567,6 +803,9 @@ namespace ZIGBEE {
 Zigbee AT Commands:
   AT+ZBLIST?          - List paired devices and devices on the network
   AT+ZBNEIGHBORS?     - List the neighbour table (devices on our network)
+  AT+ZBINFO?          - Our network: PAN ID, channel, address, permit-join left
+  AT+ZBEPS=<short>    - Ask a device for its endpoints and clusters (read with AT+ZBEPS?)
+  AT+ZBBIND=<short>,<ep> - Bind the device's On/Off client on <ep> to our light
   AT+ZBTOGGLE         - Toggle a light, as a long (2-5 s) button press does:
                         on an end device the coordinator's, else our own
   AT+ZBTOGGLE=<short> - Toggle the light on the device with that short address
@@ -596,12 +835,12 @@ namespace PLUGINS {
     int led_idle_color() {
         // Show the Zigbee light state while nothing else needs the LED
         if(ZIGBEE::light_on) {
-            // orange, not green: against the dim yellow idle glow green is hard to tell apart
+            // orange, not green: against the dim blue idle glow green is hard to tell apart
             return LED_RGB_ORANGE;
         }
 #if defined(ZIGBEE_MODE_ED)
         // The end device is the board with the button: purple, so the two
-        // boards are easy to tell apart. The coordinator keeps the dim yellow.
+        // boards are easy to tell apart. The coordinator keeps the dim blue.
         return LED_RGB_IDLE_PURPLE;
 #else
         return -1;

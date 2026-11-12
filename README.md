@@ -89,14 +89,57 @@ binding for this: the command is addressed straight at endpoint 3 of short
 address 0x0000.
 
 The two boards are easy to tell apart by their idle LED: the coordinator glows
-dim yellow, the end device (the one with the button) dim purple. The
+dim blue, the end device (the one with the button) dim purple. The
 coordinator turns bright orange while its light is on (orange rather than
-green: against the dim yellow idle glow, green is hard to tell apart).
+green: against the dim blue idle glow, green is hard to tell apart).
 
 The status LED shows the light state only while nothing more urgent needs it
 (BLE advertising and a BLE connection still win). A plugin asks for that
 through the `PLUGINS::led_idle_color()` hook in `plugins.h`, and takes the
 otherwise unused long press through `PLUGINS::button_long_press()`.
+
+## IKEA STYRBAR remote
+
+The STYRBAR (E2002) is a Zigbee 3.0 remote that joins the coordinator as a
+sleepy end device. Tested with the coordinator's light on endpoint 3.
+
+Steps that worked:
+
+1. Open the network: `AT+ZBJOIN=254` (the join window is capped at 254 s).
+2. Pair the remote: hold it next to the coordinator, then press the small pair
+   button on the back four times quickly. Put the lid back on first: the back
+   cover holds the buttons against the board, so presses don't register without it.
+3. Check it joined: `AT+ZBLIST?` shows it as `Rel=child`, or `AT+ZBNEIGHBORS?`.
+4. Find its endpoint: `AT+ZBEPS=<short>` (short address from step 3), then
+   `AT+ZBEPS?`. The STYRBAR has endpoint 1 with On/Off as an output cluster (`0x0006`).
+5. Bind it to our light: `AT+ZBBIND=<short>,<endpoint>`. The coordinator resends
+   every 6 s for up to 120 s, so press a button on the remote while it retries.
+   The log shows `Bind OK` when it works.
+6. Press ON and OFF on the remote. The log shows `Light switched ON/OFF`, and the
+   coordinator's LED is orange while the light is on, dim blue when it is off.
+
+Things that caught us out:
+
+- A sleeping device answers a request only in a short window after a button
+  press. Requests time out after 5 s (status 133), which is why the bind retries.
+- `openNetwork()` takes a `uint8_t`, so a timeout over 255 s wraps. Use 254 or less.
+- `getBoundDevices()` only lists devices bound to our endpoints, so a plain join
+  does not show up there. `AT+ZBLIST?` reads the neighbour table as well.
+
+Background reading:
+
+- [Zigbee2MQTT: IKEA E2001/E2002/E2313](https://www.zigbee2mqtt.io/devices/E2001_E2002_E2313.html):
+  cluster notes and pairing.
+- [Zigbee2MQTT discussion #20625](https://github.com/Koenkk/zigbee2mqtt/discussions/20625):
+  binding on newer firmware.
+- [Home Assistant: STYRBAR bind/unbind issue](https://community.home-assistant.io/t/ikea-styrbar-e2001-e2002-bind-unbind-issue/922254).
+- [Home Assistant: STYRBAR not pairing because of Tuya lights](https://community.home-assistant.io/t/solved-ikea-styrbar-e2001-e2002-not-pairing-via-zigbee2mqtt-due-to-tuya-lights/929237).
+- [Telldus: installing the STYRBAR](https://telldus.com/en/blogs/faq/installera-styrbar-till-hub-1-med-telldus-flow-app):
+  pairing LED sequence.
+- [IKEA STYRBAR manual summary](https://manuals.plus/ikea/styrbar-zigbee-remote-control-manual):
+  range 10 m with no walls, indoor use only, up to 10 lights per remote.
+- [IKEA product page](https://www.ikea.com/fi/en/p/styrbar-remote-control-smart-white-30488363).
+- [Zigbee 3.0 certification listing](https://csa-iot.org/csa_product/styrbar-remote-control/).
 
 ## Building and flashing
 
