@@ -5812,7 +5812,7 @@ void IRAM_ATTR ledBlinkTimer() {
 }
 
 // LED colors for the ESP32-H2 Super Mini RGB LED, chosen by determine_led_state()
-#define LED_RGB_LEVEL 32 // 0-255 per channel, kept low, the WS2812 is bright
+#define LED_RGB_LEVEL 26 // 0-255 per channel, ~10% brightness to save power
 enum { LED_RGB_NONE = 0, LED_RGB_RED, LED_RGB_GREEN, LED_RGB_BLUE, LED_RGB_MAGENTA, LED_RGB_CYAN };
 uint8_t led_rgb_color = LED_RGB_RED;
 
