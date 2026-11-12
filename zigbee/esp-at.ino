@@ -5797,7 +5797,7 @@ void log_wifi_info(const char *msg) {
 // LED configuration
 volatile bool led_state = false;
 bool last_led_state = false;
-int last_led_interval = 0;
+int last_led_interval = -1; // -1: not set yet, so the first set_led_blink() always applies (it stops the setup timer for steady states)
 int8_t last_led_brightness = 0;
 int8_t led_brightness_off = LED_BRIGHTNESS_OFF;
 int8_t led_brightness_on  = LED_BRIGHTNESS_LOW;
@@ -5813,7 +5813,8 @@ void IRAM_ATTR ledBlinkTimer() {
 
 // LED colors for the ESP32-H2 Super Mini RGB LED, chosen by determine_led_state()
 #define LED_RGB_LEVEL 26 // 0-255 per channel, ~10% brightness to save power
-enum { LED_RGB_NONE = 0, LED_RGB_RED, LED_RGB_GREEN, LED_RGB_BLUE, LED_RGB_MAGENTA, LED_RGB_CYAN };
+#define LED_RGB_IDLE_LEVEL 4 // steady "running, nothing to report" glow, ~1.5%
+enum { LED_RGB_NONE = 0, LED_RGB_RED, LED_RGB_GREEN, LED_RGB_BLUE, LED_RGB_MAGENTA, LED_RGB_CYAN, LED_RGB_IDLE };
 uint8_t led_rgb_color = LED_RGB_RED;
 
 #if defined(CONFIG_IDF_TARGET_ESP32H2)
@@ -5834,6 +5835,7 @@ void led_rgb_update() {
     case LED_RGB_BLUE:    b = LED_RGB_LEVEL; break;
     case LED_RGB_MAGENTA: r = LED_RGB_LEVEL; b = LED_RGB_LEVEL; break;
     case LED_RGB_CYAN:    g = LED_RGB_LEVEL * 2; b = LED_RGB_LEVEL; break; // more green, so it reads as cyan not blue
+    case LED_RGB_IDLE:    r = LED_RGB_IDLE_LEVEL; g = LED_RGB_IDLE_LEVEL; break; // yellow: running, ok
     default: break;
   }
   rgbLedWrite((uint8_t)LED, r, g, b);
@@ -5925,7 +5927,12 @@ int determine_led_state() {
   // Enhanced LED control with new behavior patterns
   int led_interval = 0;
   unsigned long now = millis();
+  #if defined(CONFIG_IDF_TARGET_ESP32H2)
+  // H2 RGB LED: no 50 ms flicker on serial/BLE traffic, that would be a blink in the steady state
+  bool comm_active = false;
+  #else
   bool comm_active = (now - last_activity < COMM_ACTIVITY_LED_DURATION);
+  #endif
 
   #ifdef SUPPORT_WIFI
   bool is_wifi_connected = (WiFi.status() == WL_CONNECTED);
@@ -5974,11 +5981,12 @@ int determine_led_state() {
     led_rgb_color = LED_RGB_GREEN;
   #endif // SUPPORT_WIFI
   } else {
-    // Not connected: slowly blinking
-    led_interval = LED_BLINK_INTERVAL_HALF;
-    led_brightness_on = LED_BRIGHTNESS_LOW;
-    led_brightness_off = LED_BRIGHTNESS_OFF;
-    led_rgb_color = LED_RGB_RED;
+    // Running, nothing to report: steady very dim glow (no blink, to save power).
+    // Brightness values only pick on/off for the H2 LED, see led_rgb_update.
+    led_interval = 0;
+    led_brightness_on = LED_BRIGHTNESS_LOW + LED_BRIGHTNESS_FLICKER;
+    led_brightness_off = LED_BRIGHTNESS_LOW + LED_BRIGHTNESS_FLICKER;
+    led_rgb_color = LED_RGB_IDLE;
   }
   return led_interval;
 }
@@ -6004,11 +6012,16 @@ void set_led_blink(int interval_ms) {
         // Same brightness, just set it and stop timer
         timerStop(led_t);
         last_led_state = !led_state; // force update
+        #if defined(CONFIG_IDF_TARGET_ESP32H2)
+        // H2 RGB LED: brightness is not used (led_rgb_update), so steady means on
+        led_on();
+        #else
         if(led_brightness_on > LED_BRIGHTNESS_LOW) {
           led_on();
         } else {
           led_off();
         }
+        #endif
       }
     } else {
       timerStop(led_t);
