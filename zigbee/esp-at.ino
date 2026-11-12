@@ -2402,6 +2402,7 @@ AT+BLE_ADDR_TYPE=|?
 AT+BLE_ADDR=|?
 AT+BLE_ADDR_GEN?
 AT+BLE_STATUS?
+AT+BLE_ADV=
 )EOF"
 #endif
 
@@ -2652,7 +2653,8 @@ BLE Commands:
   AT+BLE_ADDR=<address>         - Set custom BLE MAC address (format: XX:XX:XX:XX:XX:XX)
   AT+BLE_ADDR?                  - Get current BLE MAC address
   AT+BLE_ADDR_GEN?              - Generate new random static address
-  AT+BLE_STATUS?                - Get BLE connection and security status)EOF"
+  AT+BLE_STATUS?                - Get BLE connection and security status
+  AT+BLE_ADV=<0|1>              - Start (1) or stop (0) advertising, as a BOOT press does (10 s timeout))EOF"
 #endif // BLUETOOTH_UART_AT
 
 #if defined(SUPPORT_BLE_UART1)
@@ -4129,6 +4131,27 @@ const char* at_cmd_handler(const char* atcmdline) {
     return AT_R_OK;
   } else if(p = at_cmd_check("AT+BLE_AUTH_REQ?", atcmdline, cmd_len)) {
     return AT_R_INT(cfg.ble_auth_req);
+  } else if(p = at_cmd_check("AT+BLE_ADV=", atcmdline, cmd_len)) {
+    // Same as a normal BOOT press: start advertising (auto stops after the timeout
+    // when nothing connects) or stop it. 1 = start, 0 = stop.
+    if(*p == '1') {
+      if(ble_advertising_start == 0) {
+        start_advertising_ble();
+        #ifdef LED
+        set_led_blink(LED_BLINK_INTERVAL_FAST);
+        #endif // LED
+      }
+      return AT_R("advertising");
+    } else if(*p == '0') {
+      if(ble_advertising_start != 0) {
+        stop_advertising_ble();
+        #ifdef LED
+        set_led_blink(LED_BLINK_OFF);
+        #endif // LED
+      }
+      return AT_R("stopped");
+    }
+    return AT_R("+ERROR: Use AT+BLE_ADV=1 to start advertising, AT+BLE_ADV=0 to stop");
   } else if(p = at_cmd_check("AT+BLE_STATUS?", atcmdline, cmd_len)) {
     String status = "BLE: ";
     if(ble_advertising_start == 0) {
