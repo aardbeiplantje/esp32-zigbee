@@ -2,7 +2,7 @@
 
 ## Git workflow
 
-- Do not create, switch to or work on branches unless the user explicitly asks for one. Work and commit on the branch that is checked out, which is `main` by default.
+- Do not use branches. Do not create, switch to or work on any branch (including feature branches and worktrees) unless the user explicitly asks for one. Work and commit on `main`, which is checked out by default.
 - When the user asks to finish or ship work, do all of these:
   1. Commit the changes.
   2. Merge every other local and remote branch into `main`.
