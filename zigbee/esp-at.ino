@@ -5834,10 +5834,8 @@ void IRAM_ATTR ledBlinkTimer() {
   portEXIT_CRITICAL_ISR(&led_timer_mux);
 }
 
-// LED colors for the ESP32-H2 Super Mini RGB LED, chosen by determine_led_state()
-#define LED_RGB_LEVEL 26 // 0-255 per channel, ~10% brightness to save power
-#define LED_RGB_IDLE_LEVEL 4 // steady "running, nothing to report" glow, ~1.5%
-enum { LED_RGB_NONE = 0, LED_RGB_RED, LED_RGB_GREEN, LED_RGB_BLUE, LED_RGB_MAGENTA, LED_RGB_CYAN, LED_RGB_IDLE };
+// LED colors for the ESP32-H2 Super Mini RGB LED, chosen by determine_led_state().
+// The LED_RGB_* values live in plugins.h, so a plugin can ask for one.
 uint8_t led_rgb_color = LED_RGB_RED;
 
 #if defined(CONFIG_IDF_TARGET_ESP32H2)
@@ -6010,6 +6008,15 @@ int determine_led_state() {
     led_brightness_on = LED_BRIGHTNESS_LOW + LED_BRIGHTNESS_FLICKER;
     led_brightness_off = LED_BRIGHTNESS_LOW + LED_BRIGHTNESS_FLICKER;
     led_rgb_color = LED_RGB_IDLE;
+    #ifdef SUPPORT_PLUGINS
+    // Nothing else needs the LED: let a plugin show its own state
+    if(PLUGINS::led_idle_color) {
+      int c = PLUGINS::led_idle_color();
+      if(c >= 0) {
+        led_rgb_color = (uint8_t)c;
+      }
+    }
+    #endif // SUPPORT_PLUGINS
   }
   return led_interval;
 }
@@ -6244,6 +6251,14 @@ void determine_button_state() {
       #ifdef LED
       set_led_blink(LED_BLINK_INTERVAL_SLOW);
       #endif // LED
+      #else
+      #ifdef SUPPORT_PLUGINS
+      // No WPS compiled in: the long press is the plugin's
+      if(PLUGINS::button_long_press) {
+        LOG("[BUTTON] Long press, handing it to the plugin");
+        PLUGINS::button_long_press();
+      }
+      #endif // SUPPORT_PLUGINS
       #endif // WIFI_WPS
     #ifdef SUPPORT_BLE_UART1
     } else if (press_duration >= BUTTON_LONG_PRESS_2_MS) {

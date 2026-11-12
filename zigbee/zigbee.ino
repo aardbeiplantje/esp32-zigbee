@@ -64,6 +64,51 @@ namespace ZIGBEE {
     // defined below, used by loop()
     size_t count_children();
 
+    // The coordinator is always short address 0x0000; our light is endpoint 3.
+    #define ZB_COORDINATOR_SHORT_ADDR 0x0000
+    #define ZB_LIGHT_ENDPOINT 3
+
+    // State of our own light endpoint, shown on the status LED
+    bool light_on = false;
+
+    // Send an On/Off "toggle" to a light endpoint on another device.
+    // ZigbeeSwitch::lightToggle() refuses unless the switch is bound, so this
+    // builds the same ZCL command the Arduino method maps to and sends it
+    // directly, which works for any device on the network.
+    bool send_light_toggle(uint16_t short_addr, uint8_t dst_endpoint) {
+        if(!Zigbee.started()) {
+            LOG("[ZIGBEE] Cannot send a toggle: the Zigbee stack is not started");
+            return false;
+        }
+        esp_zb_zcl_on_off_cmd_t cmd_req;
+        memset(&cmd_req, 0, sizeof(cmd_req));
+        cmd_req.zcl_basic_cmd.src_endpoint     = zbSwitch.getEndpoint();
+        cmd_req.zcl_basic_cmd.dst_endpoint     = dst_endpoint;
+        cmd_req.zcl_basic_cmd.dst_addr_u.addr_short = short_addr;
+        cmd_req.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
+        cmd_req.on_off_cmd_id = ESP_ZB_ZCL_CMD_ON_OFF_TOGGLE_ID;
+        if(!esp_zb_lock_acquire(pdMS_TO_TICKS(1000))) {
+            LOG("[ZIGBEE] Could not acquire the Zigbee lock to send a toggle");
+            return false;
+        }
+        esp_zb_zcl_on_off_cmd_req(&cmd_req);
+        esp_zb_lock_release();
+        LOG("[ZIGBEE] Sent light toggle to 0x%04X endpoint %d", short_addr, dst_endpoint);
+        return true;
+    }
+
+    // A long press (2-5 s) on the BOOT button toggles a light: on an end device
+    // the coordinator's, on the coordinator its own.
+    void button_toggle_light() {
+#if defined(ZIGBEE_MODE_ED)
+        LOG("[ZIGBEE] Button: toggling the light on the coordinator");
+        send_light_toggle(ZB_COORDINATOR_SHORT_ADDR, ZB_LIGHT_ENDPOINT);
+#else
+        LOG("[ZIGBEE] Button: toggling our own light");
+        zbLight.setLight(!zbLight.getLightState());
+#endif
+    }
+
     // Information about a bound device, as reported by the Zigbee stack
     struct DiscoveredDevice {
         uint64_t ieee_addr;
@@ -110,6 +155,11 @@ namespace ZIGBEE {
         });
         zbLight.onIdentify([](uint16_t duration) {
             LOG("[ZIGBEE] Light Identify command received with duration %d seconds", duration);
+        });
+        zbLight.onLightChange([](bool on) {
+            // Someone on the network switched our light: show it on the status LED
+            light_on = on;
+            LOG("[ZIGBEE] Light switched %s", on ? "ON" : "OFF");
         });
         LOG("[ZIGBEE] Adding light endpoint with ID %d", zbLight.getEndpoint());
         Zigbee.addEndpoint(&zbLight);
@@ -428,6 +478,35 @@ namespace ZIGBEE {
             }
             return response;
         }
+        // AT+ZBTOGGLE[=<short_addr>] - Toggle a light, the same as a long button press
+        else if (p = COMMON::at_cmd_check("AT+ZBTOGGLE=", at_cmd, cmd_len)) {
+            unsigned int short_addr = 0;
+            if (sscanf(p, "%x", &short_addr) != 1) {
+                return AT_R("+ERROR: Use AT+ZBTOGGLE=<short address in hex, e.g. 87FF>");
+            }
+            if (!send_light_toggle((uint16_t)short_addr, ZB_LIGHT_ENDPOINT)) {
+                return AT_R("+ERROR: Could not send the toggle");
+            }
+            snprintf(response, sizeof(response), "+ZBTOGGLE:sent to 0x%04X endpoint %d\r\nOK",
+                     (uint16_t)short_addr, ZB_LIGHT_ENDPOINT);
+            return response;
+        }
+        else if (p = COMMON::at_cmd_check("AT+ZBTOGGLE", at_cmd, cmd_len)) {
+            button_toggle_light();
+            return AT_R("OK");
+        }
+        // AT+ZBLIGHT=<0|1> / AT+ZBLIGHT? - Our own light endpoint
+        else if (p = COMMON::at_cmd_check("AT+ZBLIGHT=", at_cmd, cmd_len)) {
+            if (*p != '0' && *p != '1') {
+                return AT_R("+ERROR: Use AT+ZBLIGHT=1 to switch on, AT+ZBLIGHT=0 to switch off");
+            }
+            zbLight.setLight(*p == '1');
+            return AT_R("OK");
+        }
+        else if (p = COMMON::at_cmd_check("AT+ZBLIGHT?", at_cmd, cmd_len)) {
+            snprintf(response, sizeof(response), "+ZBLIGHT:%s", zbLight.getLightState() ? "on" : "off");
+            return response;
+        }
         // AT+ZBJOIN=<timeout_sec> - Enable/disable permit joining
         else if (p = COMMON::at_cmd_check("AT+ZBJOIN=", at_cmd, cmd_len)) {
             // For coordinators/routers, "scan" means enabling permit joining
@@ -488,6 +567,11 @@ namespace ZIGBEE {
 Zigbee AT Commands:
   AT+ZBLIST?          - List paired devices and devices on the network
   AT+ZBNEIGHBORS?     - List the neighbour table (devices on our network)
+  AT+ZBTOGGLE         - Toggle a light, as a long (2-5 s) button press does:
+                        on an end device the coordinator's, else our own
+  AT+ZBTOGGLE=<short> - Toggle the light on the device with that short address
+  AT+ZBLIGHT=<0|1>    - Switch our own light endpoint on or off
+  AT+ZBLIGHT?         - Get our own light state
   AT+ZBJOIN=<sec>     - Enable permit joining for specified seconds (0 to disable)
   AT+ZBSCAN=1         - Scan for nearby Zigbee networks (end devices)
   AT+ZBDEVICES=1      - Snapshot the devices bound to the network
@@ -508,5 +592,13 @@ namespace PLUGINS {
     }
     const char * at_get_help_string() {
         return ZIGBEE::at_get_help_string();
+    }
+    int led_idle_color() {
+        // Show the Zigbee light state while nothing else needs the LED
+        return ZIGBEE::light_on ? LED_RGB_GREEN : -1;
+    }
+    void button_long_press() {
+        // Toggle the light on the coordinator (on the coordinator itself, our own)
+        ZIGBEE::button_toggle_light();
     }
 }

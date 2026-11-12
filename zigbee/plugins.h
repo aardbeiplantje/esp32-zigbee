@@ -32,6 +32,12 @@
 #ifndef _PLUGINS_H
 #define _PLUGINS_H
 
+// Colors the status LED can show. A plugin returns one of these from
+// led_idle_color() to show its own state while nothing else needs the LED.
+#define LED_RGB_LEVEL 26 // 0-255 per channel, ~10% brightness to save power
+#define LED_RGB_IDLE_LEVEL 4 // steady "running, nothing to report" glow, ~1.5%
+enum { LED_RGB_NONE = 0, LED_RGB_RED, LED_RGB_GREEN, LED_RGB_BLUE, LED_RGB_MAGENTA, LED_RGB_CYAN, LED_RGB_IDLE };
+
 namespace PLUGINS {
     // add all functions as weak
     void initialize() __attribute__((weak));
@@ -42,6 +48,11 @@ namespace PLUGINS {
     void clear_config() __attribute__((weak));
     const char * at_cmd_handler(const char *at_cmd) __attribute__((weak));
     const char * at_get_help_string() __attribute__((weak));
+    // The color to show while nothing else needs the LED: an LED_RGB_* value,
+    // or < 0 to leave the idle state alone.
+    int led_idle_color() __attribute__((weak));
+    // A long press (2-5 s) on the button that nothing else handled
+    void button_long_press() __attribute__((weak));
 }
 
 #endif // _PLUGINS_H

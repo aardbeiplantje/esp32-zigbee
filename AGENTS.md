@@ -18,3 +18,6 @@
 - BLE sniffer: `nrfutil ble-sniffer sniff --port /dev/ttyACM1 --output-pcap-file <file>`. Decode the capture with `tshark`.
 - Power meter: `usb_logger log --id 2e3c:5558 --duration <N>s -t csv -o <file>`. Start it before the test so the baseline is in the same file.
 - Keep test output in the scratchpad directory, not in the repository.
+- Two boards are connected: `coordinator` and `enddevice` (see `boards.toml`). Find their ports with `python3 deploy.py list`; opening a port resets that board unless DTR/RTS are left low.
+- A device that joined the network is in the stack's neighbour table, not in `getBoundDevices()`. `AT+ZBLIST?` reports both. An ESP32-H2's IEEE address is its base MAC with `FF:FE` in the middle.
+- The Zigbee storage lives in its own flash partition, so `AT+ERASE` does not clear a stored network. To make a board forget it, erase the flash (`esptool --chip esp32h2 -p <port> erase-flash`) and reflash.

@@ -30,6 +30,10 @@ lives in `zigbee/zigbee.ino` and is hooked into the template through the weak
 | `AT+ZBSCAN=1` | Scan for nearby Zigbee networks |
 | `AT+ZBDEVICES=1` | Take a snapshot of the bound devices |
 | `AT+ZBDEVICES?` | Show the snapshot taken by `AT+ZBDEVICES=1` |
+| `AT+ZBTOGGLE` | Toggle a light, as a long (2-5 s) BOOT press does: on an end device the coordinator's, on the coordinator its own |
+| `AT+ZBTOGGLE=<short>` | Toggle the light on the device with that short address, e.g. `AT+ZBTOGGLE=87FF` |
+| `AT+ZBLIGHT=<0\|1>` | Switch our own light endpoint on or off |
+| `AT+ZBLIGHT?` | Get our own light state |
 
 The device exposes four endpoints: gateway (1), switch (2), light (3) and
 thermostat (4). On boot the network is open for 180 seconds so devices can join.
@@ -62,6 +66,32 @@ role = "COORDINATOR"
 
 To add a board, plug it in and run `python3 deploy.py identify <port>`. It prints
 the entry to paste into `boards.toml`.
+
+## Two boards: a button and a light
+
+`boards.toml` holds a `COORDINATOR` and an `ENDDEVICE`. They run the same
+sketch; the role picks the Zigbee mode (`ZigbeeMode=zczr` with
+`-DZIGBEE_MODE_ZCZR`, or `ZigbeeMode=ed` with `-DZIGBEE_MODE_ED`).
+
+```bash
+python3 deploy.py deploy coordinator
+python3 deploy.py deploy enddevice
+```
+
+The end device joins on boot while the coordinator's network is open (180 s
+after a coordinator reboot, or after `AT+ZBJOIN=<sec>`). Check it joined with
+`AT+ZBLIST?` on the coordinator: it appears as `Rel=child`.
+
+Then a long (2-5 s) press of BOOT on the end device toggles the coordinator's
+light endpoint, and the coordinator's RGB LED turns green while it is on.
+`AT+ZBTOGGLE` does the same thing without the button. A joined device needs no
+binding for this: the command is addressed straight at endpoint 3 of short
+address 0x0000.
+
+The status LED shows the light state only while nothing more urgent needs it
+(BLE advertising and a BLE connection still win). A plugin asks for that
+through the `PLUGINS::led_idle_color()` hook in `plugins.h`, and takes the
+otherwise unused long press through `PLUGINS::button_long_press()`.
 
 ## Building and flashing
 

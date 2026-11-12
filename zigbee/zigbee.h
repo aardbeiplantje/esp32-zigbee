@@ -68,12 +68,16 @@
 #include <vector>
 #include <cstdint>
 
+#include "plugins.h"   // the weak hooks and the LED_RGB_* colors
+
 namespace PLUGINS {
     // Zigbee plugin API implementation
     void initialize();
     void loop_pre();
     const char * at_cmd_handler(const char *at_cmd);
     const char * at_get_help_string();
+    int led_idle_color();
+    void button_long_press();
 }
 
 namespace ZIGBEE {
