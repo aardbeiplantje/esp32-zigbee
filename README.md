@@ -141,6 +141,19 @@ Background reading:
 - [IKEA product page](https://www.ikea.com/fi/en/p/styrbar-remote-control-smart-white-30488363).
 - [Zigbee 3.0 certification listing](https://csa-iot.org/csa_product/styrbar-remote-control/).
 
+## Other Zigbee devices
+
+### Sonoff TRVZB (radiator valve)
+
+A thermostatic radiator valve with a built-in temperature sensor. Not yet
+supported by the firmware; the coordinator's thermostat endpoint is a client,
+so the valve is controlled by reading and writing its thermostat cluster directly.
+
+- Product: [Sonoff Zigbee thermostatic radiator valve](https://sonoff.tech/en-eu/products/sonoff-zigbee-thermostatic-radiator-valve)
+- Zigbee2MQTT: [TRVZB](https://zigbee2mqtt.io/devices/TRVZB.html) (setpoint and local temperature attributes)
+- Setup notes: [PrivateHomelab: TRVZB with Zigbee2MQTT](https://privatehomelab.com/sonoff-trvzb-radiator-valve-zigbee2mqtt-home-assistant/)
+- The body sensor reads warmer than the room, since the valve sits on the radiator. An external room reading can be used instead.
+
 ## Building and flashing
 
 Requires Python 3.11+, `pyserial`, and `arduino-cli`.
