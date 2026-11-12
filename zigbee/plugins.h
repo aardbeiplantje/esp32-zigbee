@@ -36,7 +36,9 @@
 // led_idle_color() to show its own state while nothing else needs the LED.
 #define LED_RGB_LEVEL 26 // 0-255 per channel, ~10% brightness to save power
 #define LED_RGB_IDLE_LEVEL 4 // steady "running, nothing to report" glow, ~1.5%
-enum { LED_RGB_NONE = 0, LED_RGB_RED, LED_RGB_GREEN, LED_RGB_BLUE, LED_RGB_MAGENTA, LED_RGB_CYAN, LED_RGB_IDLE };
+enum { LED_RGB_NONE = 0, LED_RGB_RED, LED_RGB_GREEN, LED_RGB_BLUE, LED_RGB_MAGENTA, LED_RGB_CYAN,
+       LED_RGB_IDLE,          // dim yellow: running, nothing to report
+       LED_RGB_IDLE_PURPLE }; // dim purple: the same, on a board you want to tell apart
 
 namespace PLUGINS {
     // add all functions as weak

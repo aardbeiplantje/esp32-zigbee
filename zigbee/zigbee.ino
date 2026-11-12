@@ -595,7 +595,16 @@ namespace PLUGINS {
     }
     int led_idle_color() {
         // Show the Zigbee light state while nothing else needs the LED
-        return ZIGBEE::light_on ? LED_RGB_GREEN : -1;
+        if(ZIGBEE::light_on) {
+            return LED_RGB_GREEN;
+        }
+#if defined(ZIGBEE_MODE_ED)
+        // The end device is the board with the button: purple, so the two
+        // boards are easy to tell apart. The coordinator keeps the dim yellow.
+        return LED_RGB_IDLE_PURPLE;
+#else
+        return -1;
+#endif
     }
     void button_long_press() {
         // Toggle the light on the coordinator (on the coordinator itself, our own)

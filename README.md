@@ -88,6 +88,10 @@ light endpoint, and the coordinator's RGB LED turns green while it is on.
 binding for this: the command is addressed straight at endpoint 3 of short
 address 0x0000.
 
+The two boards are easy to tell apart by their idle LED: the coordinator glows
+dim yellow, the end device (the one with the button) dim purple. The
+coordinator turns green while its light is on.
+
 The status LED shows the light state only while nothing more urgent needs it
 (BLE advertising and a BLE connection still win). A plugin asks for that
 through the `PLUGINS::led_idle_color()` hook in `plugins.h`, and takes the
