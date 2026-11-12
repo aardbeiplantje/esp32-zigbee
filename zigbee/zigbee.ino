@@ -596,7 +596,8 @@ namespace PLUGINS {
     int led_idle_color() {
         // Show the Zigbee light state while nothing else needs the LED
         if(ZIGBEE::light_on) {
-            return LED_RGB_GREEN;
+            // orange, not green: against the dim yellow idle glow green is hard to tell apart
+            return LED_RGB_ORANGE;
         }
 #if defined(ZIGBEE_MODE_ED)
         // The end device is the board with the button: purple, so the two

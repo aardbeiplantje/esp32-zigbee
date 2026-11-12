@@ -5859,6 +5859,8 @@ void led_rgb_update() {
     case LED_RGB_IDLE:    r = LED_RGB_IDLE_LEVEL; g = LED_RGB_IDLE_LEVEL; break; // yellow: running, ok
     // blue reads dimmer than red at the same level, so give it twice as much
     case LED_RGB_IDLE_PURPLE: r = LED_RGB_IDLE_LEVEL; b = LED_RGB_IDLE_LEVEL * 2; break;
+    // mostly red with a little green: yellow has them equal, so this reads orange
+    case LED_RGB_ORANGE:  r = LED_RGB_LEVEL; g = LED_RGB_LEVEL / 4; break;
     default: break;
   }
   rgbLedWrite((uint8_t)LED, r, g, b);

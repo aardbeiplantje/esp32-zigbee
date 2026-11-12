@@ -90,7 +90,8 @@ address 0x0000.
 
 The two boards are easy to tell apart by their idle LED: the coordinator glows
 dim yellow, the end device (the one with the button) dim purple. The
-coordinator turns green while its light is on.
+coordinator turns bright orange while its light is on (orange rather than
+green: against the dim yellow idle glow, green is hard to tell apart).
 
 The status LED shows the light state only while nothing more urgent needs it
 (BLE advertising and a BLE connection still win). A plugin asks for that
