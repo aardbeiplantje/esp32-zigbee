@@ -5933,8 +5933,18 @@ void setup_led() {
   }
   #endif // SUPPORT_LED_BRIGHTNESS
 
+  #if defined(CONFIG_IDF_TARGET_ESP32H2)
+  // A RESET leaves the WS2812 showing its last colour until something writes a new frame,
+  // so clear it first: the reset is then visible, and the status colour comes on after 1 s
+  rgbLedWrite((uint8_t)LED, 0, 0, 0);
+  delay(1000);
+  #endif
+
   // Start with LED on, and on/off are normal brightness values
   led_on();
+  #if defined(CONFIG_IDF_TARGET_ESP32H2)
+  led_rgb_update();   // show the status colour now, not on the first loop
+  #endif
 
   // setup a LED blink timer, default to 1 second interval -> AFTER pwm setup,
   // use timer 1, as 0 is used by PWM internally? Pick the same as PWM channel,
@@ -6179,22 +6189,26 @@ void determine_button_state() {
     #endif // LED
     return;
   }
-  #if defined(SUPPORT_PLUGINS) && (defined(SUPPORT_BLE_UART1) || defined(BLUETOOTH_UART_AT))
+  #if defined(SUPPORT_PLUGINS)
   // A plugin takes the 5 s hold (Zigbee join mode). While the button is held:
-  // after 1 s BLE starts advertising, as a normal press would; held on to 5 s,
-  // BLE stops and the plugin's hold action runs. Released in between, BLE stays.
+  // after 1 s BLE starts advertising, as a normal press would (only when BLE is built in);
+  // held on to 5 s, BLE stops and the plugin's hold action runs. Released in between, BLE stays.
   if(last_button_state && PLUGINS::button_hold_5s) {
     if(button_action == 1 && press_duration >= BUTTON_HOLD_BLE_MS) {
       button_action = 2;
+      #if defined(SUPPORT_BLE_UART1) || defined(BLUETOOTH_UART_AT)
       if(ble_advertising_start == 0) {
         LOG("[BUTTON] Held %lu ms: BLE advertising started, keep holding for join mode", press_duration);
         start_advertising_ble();
       }
+      #endif
     } else if(button_action == 2 && press_duration >= BUTTON_LONG_PRESS_2_MS) {
       button_action = 3;
+      #if defined(SUPPORT_BLE_UART1) || defined(BLUETOOTH_UART_AT)
       if(ble_advertising_start != 0) {
         stop_advertising_ble();
       }
+      #endif
       LOG("[BUTTON] Held %lu ms: handing the hold to the plugin", press_duration);
       PLUGINS::button_hold_5s();
     }

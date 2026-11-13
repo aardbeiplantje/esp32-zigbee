@@ -113,7 +113,14 @@ namespace ZIGBEE {
         join_device_joined = false;
         permit_join_end_time = millis() + (timeout_sec * 1000);
         last_permit_join_log_time = 0;  // Reset to log immediately
+        // ESP-IDF rule: calls into the Zigbee stack from another task need the Zigbee lock.
+        // Without it the stack's interrupt bookkeeping can go wrong (assert in vPortExitCritical).
+        if(!esp_zb_lock_acquire(pdMS_TO_TICKS(1000))) {
+            LOG("[ZIGBEE] Could not take the Zigbee lock to open the network");
+            return;
+        }
         Zigbee.openNetwork((uint8_t)timeout_sec);
+        esp_zb_lock_release();
         LOG("[ZIGBEE] openNetwork(%d) called, waiting for join attempts...", timeout_sec);
     }
 
@@ -1092,7 +1099,10 @@ namespace ZIGBEE {
                 } else {
                     LOG("[ZIGBEE] Disabling permit joining");
                     permit_join_end_time = 0;
-                    Zigbee.closeNetwork();
+                    if(esp_zb_lock_acquire(pdMS_TO_TICKS(1000))) {
+                        Zigbee.closeNetwork();
+                        esp_zb_lock_release();
+                    }
                     snprintf(response, sizeof(response), "+ZBJOIN:permit_join_disabled\r\nOK");
                 }
                 return response;
