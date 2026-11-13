@@ -39,7 +39,8 @@
 #define SUPPORT_PLUGINS
 #define SUPPORT_ESP_LOG_INFO
 #define UART_AT
-#define BLUETOOTH_UART_AT
+// BLE is off: it shares the 2.4 GHz radio with Zigbee, and its code is left out of the build
+// #define BLUETOOTH_UART_AT
 #define LOOP_DELAY
 
 #undef SUPPORT_BLE_UART1

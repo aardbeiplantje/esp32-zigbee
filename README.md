@@ -34,6 +34,7 @@ lives in `zigbee/zigbee.ino` and is hooked into the template through the weak
 | `AT+ZBTOGGLE=<short>` | Toggle the light on the device with that short address, e.g. `AT+ZBTOGGLE=87FF` |
 | `AT+ZBLIGHT=<0\|1>` | Switch our own light endpoint on or off |
 | `AT+ZBLIGHT?` | Get our own light state |
+| `AT+ZBIC=<ieee>,<install code>` | Register a device's install code before it joins: `<ieee>` is the 16 hex digits printed on the device (MSB first), `<install code>` the 36 hex digits from its label. The code is never logged; send it over serial, not in the source |
 
 The device exposes four endpoints: gateway (1), switch (2), light (3) and
 thermostat (4). On boot the network is open for 180 seconds so devices can join.
@@ -154,7 +155,7 @@ Background reading:
 A thermostatic radiator valve with a built-in temperature sensor. The coordinator
 reads and writes its thermostat cluster (0x0201) on endpoint 1 directly.
 
-**Works (tested on channel 13):**
+**Works (tested on channel 13, and it joined the channel 20 network too):**
 - Joining: hold BOOT on the coordinator for 5 s (magenta), then put the valve in
   pairing mode: Auto off, dial to `OF`, hold the middle button for 3 s until the
   signal icon flashes. The log shows `A device joined`, and `AT+ZBLIST?` lists it.
@@ -169,7 +170,7 @@ reads and writes its thermostat cluster (0x0201) on endpoint 1 directly.
   `valveClosingDegree` as manufacturer attributes, but we haven't found their IDs.
   Manufacturer clusters `0xFC11` and `0xFC57` both appear on endpoint 1.
 - Heat demand for the boiler (the thermostat's running state): not checked.
-- Pairing on channel 15: the valve never joined there in our tests.
+- Pairing on channel 15: the valve never joined there in our tests. The coordinator's network is on channel 20 now (`ZB_NETWORK_CHANNEL` in `zigbee/zigbee.ino`).
 - Reads and writes need the valve awake. The firmware retries each one every 6 s
   for up to 120 s.
 
