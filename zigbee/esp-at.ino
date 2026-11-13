@@ -5837,18 +5837,22 @@ void IRAM_ATTR ledBlinkTimer() {
 // LED colors for the ESP32-H2 Super Mini RGB LED, chosen by determine_led_state().
 // The LED_RGB_* values live in plugins.h, so a plugin can ask for one.
 uint8_t led_rgb_color = LED_RGB_RED;
+// 0-255: how bright that colour is, 255 = full. A plugin sets it, e.g. from a dimmed light.
+uint8_t led_rgb_scale = 255;
 
 #if defined(CONFIG_IDF_TARGET_ESP32H2)
 // ESP32-H2 Super Mini: the status LED on LED (GPIO8) is an addressable WS2812
 // RGB LED, not a plain PWM LED, so it is driven with rgbLedWrite() instead.
 uint8_t last_led_rgb = 0xFF;
+uint8_t last_led_scale = 0xFF;
 
 void led_rgb_update() {
   uint8_t c = led_state ? led_rgb_color : LED_RGB_NONE;
-  if(c == last_led_rgb) {
+  if(c == last_led_rgb && led_rgb_scale == last_led_scale) {
     return;
   }
   last_led_rgb = c;
+  last_led_scale = led_rgb_scale;
   uint8_t r = 0, g = 0, b = 0;
   switch(c) {
     case LED_RGB_RED:     r = LED_RGB_LEVEL; break;
@@ -5864,6 +5868,10 @@ void led_rgb_update() {
     case LED_RGB_ORANGE:  r = LED_RGB_LEVEL; g = LED_RGB_LEVEL / 4; break;
     default: break;
   }
+  // scale the colour down for a dimmed light
+  r = (uint16_t)r * led_rgb_scale / 255;
+  g = (uint16_t)g * led_rgb_scale / 255;
+  b = (uint16_t)b * led_rgb_scale / 255;
   rgbLedWrite((uint8_t)LED, r, g, b);
 }
 #endif // CONFIG_IDF_TARGET_ESP32H2

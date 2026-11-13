@@ -95,7 +95,7 @@ namespace ZIGBEE {
     unsigned long last_permit_join_log_time = 0;
     ZigbeeGateway zbGw = ZigbeeGateway(1);
     ZigbeeSwitch zbSwitch = ZigbeeSwitch(2);
-    ZigbeeLight zbLight = ZigbeeLight(3);
+    ZigbeeDimmableLight zbLight = ZigbeeDimmableLight(3);
     CoordinatorThermostat zbThermostat = CoordinatorThermostat(4);
 
     // defined below, used by loop()
@@ -132,6 +132,14 @@ namespace ZIGBEE {
 
     // State of our own light endpoint, shown on the status LED
     bool light_on = false;
+    // Relay: our light is the one the remote controls; each change is forwarded
+    // to relay_target (AT+ZBRELAY=). Sent from loop(), like the bind requests.
+    bool relay_set = false;
+    uint16_t relay_target = 0;
+    bool relay_pending = false;
+    bool relay_on = false;
+    uint8_t relay_level = 255;
+    uint8_t light_level = 255;   // 0-254 from the Level Control cluster, last value seen
 
     // Send an On/Off "toggle" to a light endpoint on another device.
     // ZigbeeSwitch::lightToggle() refuses unless the switch is bound, so this
@@ -167,7 +175,7 @@ namespace ZIGBEE {
         send_light_toggle(ZB_COORDINATOR_SHORT_ADDR, ZB_LIGHT_ENDPOINT);
 #else
         LOG("[ZIGBEE] Button: toggling our own light");
-        zbLight.setLight(!zbLight.getLightState());
+        zbLight.setLightState(!zbLight.getLightState());
 #endif
     }
 
@@ -218,10 +226,16 @@ namespace ZIGBEE {
         zbLight.onIdentify([](uint16_t duration) {
             LOG("[ZIGBEE] Light Identify command received with duration %d seconds", duration);
         });
-        zbLight.onLightChange([](bool on) {
-            // Someone on the network switched our light: show it on the status LED
+        zbLight.onLightChange([](bool on, uint8_t level) {
+            // Someone on the network switched or dimmed our light: show it on the status LED
             light_on = on;
-            LOG("[ZIGBEE] Light switched %s", on ? "ON" : "OFF");
+            light_level = level;
+            if(relay_set) {
+                relay_pending = true;
+                relay_on = on;
+                relay_level = level;
+            }
+            LOG("[ZIGBEE] Light switched %s, level %d", on ? "ON" : "OFF", level);
         });
         LOG("[ZIGBEE] Adding light endpoint with ID %d", zbLight.getEndpoint());
         Zigbee.addEndpoint(&zbLight);
@@ -244,11 +258,9 @@ namespace ZIGBEE {
         Zigbee.setRebootOpenNetwork(180);
 #endif
         LOG("[ZIGBEE] About to call Zigbee.begin() with role=%d  (ZIGBEE_COORDINATOR=%d, ZIGBEE_END_DEVICE=%d)", role, ZIGBEE_COORDINATOR, ZIGBEE_END_DEVICE);
-#if !defined(ZIGBEE_MODE_ED)
-        // Form the network on one channel only. Channel 15 is one of the usual
-        // defaults that devices like the TRVZB scan first.
+        // One channel only, on both boards: the coordinator forms the network on it,
+        // and the end device scans only it (13 is not in the default channel set).
         Zigbee.setPrimaryChannelMask(1UL << ZB_NETWORK_CHANNEL);
-#endif
         if(!Zigbee.begin(role)) {
             LOG("[ZIGBEE] Failed to initialize Zigbee stack");
             return;
@@ -344,6 +356,8 @@ namespace ZIGBEE {
     static unsigned long bind_next_send = 0;
     static unsigned long bind_started = 0;
     static uint16_t bind_target = 0;
+    static uint16_t bind_dst = 0;     // the device whose light gets bound (0x0000: ours)
+    static bool bind_unbind = false;  // true: AT+ZBUNBIND, removes the binding instead
 
     // Every ZCL frame the stack receives passes here first. We only log that a
     // frame arrived; returning false lets the stack handle it as usual.
@@ -356,7 +370,11 @@ namespace ZIGBEE {
 
     static void bind_cb(esp_zb_zdp_status_t st, void *ctx) {
         if(st == ESP_ZB_ZDP_STATUS_SUCCESS) {
-            LOG("[ZIGBEE] Bind OK: 0x%04X is bound to our light endpoint", bind_target);
+            if(bind_unbind) {
+                LOG("[ZIGBEE] Unbind OK: 0x%04X is no longer bound to light endpoint %d of 0x%04X", bind_target, ZB_LIGHT_ENDPOINT, bind_dst);
+            } else {
+                LOG("[ZIGBEE] Bind OK: 0x%04X is bound to light endpoint %d of 0x%04X", bind_target, ZB_LIGHT_ENDPOINT, bind_dst);
+            }
             bind_pending = false;
         } else {
             LOG("[ZIGBEE] Bind to 0x%04X not answered (status %d), retrying", bind_target, st);
@@ -374,7 +392,8 @@ namespace ZIGBEE {
                 bind_send_now = false;
                 bind_next_send = now + BIND_RETRY_MS;
                 if(esp_zb_lock_acquire(pdMS_TO_TICKS(1000))) {
-                    esp_zb_zdo_device_bind_req(&bind_req, bind_cb, NULL);
+                    if(bind_unbind) esp_zb_zdo_device_unbind_req(&bind_req, bind_cb, NULL);
+                    else esp_zb_zdo_device_bind_req(&bind_req, bind_cb, NULL);
                     esp_zb_lock_release();
                 }
             }
@@ -477,8 +496,40 @@ namespace ZIGBEE {
         }
     }
 
+    // Forward the light's last on/off and level to the relay target
+    static void relay_service() {
+        if(!relay_pending) return;
+        relay_pending = false;
+        if(!esp_zb_lock_acquire(pdMS_TO_TICKS(1000))) {
+            LOG("[ZIGBEE] Relay: could not take the Zigbee lock, dropped");
+            return;
+        }
+        esp_zb_zcl_on_off_cmd_t on_cmd;
+        memset(&on_cmd, 0, sizeof(on_cmd));
+        on_cmd.zcl_basic_cmd.src_endpoint = zbLight.getEndpoint();
+        on_cmd.zcl_basic_cmd.dst_endpoint = ZB_LIGHT_ENDPOINT;
+        on_cmd.zcl_basic_cmd.dst_addr_u.addr_short = relay_target;
+        on_cmd.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
+        on_cmd.on_off_cmd_id = relay_on ? ESP_ZB_ZCL_CMD_ON_OFF_ON_ID : ESP_ZB_ZCL_CMD_ON_OFF_OFF_ID;
+        esp_zb_zcl_on_off_cmd_req(&on_cmd);
+        if(relay_on) {
+            esp_zb_zcl_move_to_level_cmd_t lvl;
+            memset(&lvl, 0, sizeof(lvl));
+            lvl.zcl_basic_cmd.src_endpoint = zbLight.getEndpoint();
+            lvl.zcl_basic_cmd.dst_endpoint = ZB_LIGHT_ENDPOINT;
+            lvl.zcl_basic_cmd.dst_addr_u.addr_short = relay_target;
+            lvl.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
+            lvl.level = relay_level;
+            lvl.transition_time = 0;
+            esp_zb_zcl_level_move_to_level_cmd_req(&lvl);
+        }
+        esp_zb_lock_release();
+        LOG("[ZIGBEE] Relayed to 0x%04X: %s, level %d", relay_target, relay_on ? "ON" : "OFF", relay_level);
+    }
+
     void loop() {
         probe_service();
+        relay_service();
         valve_service();
 #if defined(ZIGBEE_MODE_ED)
         // log each change of the join state (the stack joins in the background)
@@ -826,39 +877,63 @@ namespace ZIGBEE {
             probe_report[probe_len] = 0;
             return probe_report;
         }
-        // AT+ZBBIND=<short>,<src_ep> - Bind the remote's On/Off client on src_ep to our light
-        else if (p = COMMON::at_cmd_check("AT+ZBBIND=", at_cmd, cmd_len)) {
-            unsigned int addr = 0, src_ep = 0;
-            if (sscanf(p, "%x,%u", &addr, &src_ep) != 2) {
-                return AT_R("+ERROR: Use AT+ZBBIND=<short hex>,<endpoint>, e.g. AT+ZBBIND=74C5,1");
+        // AT+ZBRELAY=<short> - Forward our light's on/off and level to <short> (0 to stop)
+        else if (p = COMMON::at_cmd_check("AT+ZBRELAY=", at_cmd, cmd_len)) {
+            unsigned int addr = 0;
+            if (sscanf(p, "%x", &addr) != 1) {
+                return AT_R("+ERROR: Use AT+ZBRELAY=<short hex>, or AT+ZBRELAY=0 to stop");
             }
-            // the remote's IEEE address comes from our neighbour table
+            relay_set = (addr != 0);
+            relay_target = (uint16_t)addr;
+            LOG("[ZIGBEE] Relay %s, target 0x%04X", relay_set ? "on" : "off", (uint16_t)addr);
+            return AT_R("OK");
+        }
+        // AT+ZBBIND=<short>,<src_ep>[,<dst_short>[,<cluster>]] - Bind the remote's client
+        // cluster on src_ep (default On/Off) to a light endpoint: ours, or the light of <dst_short>.
+        // AT+ZBUNBIND= takes the same arguments and removes the binding.
+        else if ((p = COMMON::at_cmd_check("AT+ZBBIND=", at_cmd, cmd_len)) || (p = COMMON::at_cmd_check("AT+ZBUNBIND=", at_cmd, cmd_len))) {
+            bind_unbind = (strncmp(at_cmd, "AT+ZBUNBIND", 11) == 0);
+            unsigned int addr = 0, src_ep = 0, dst = ZB_COORDINATOR_SHORT_ADDR;
+            unsigned int cluster = ESP_ZB_ZCL_CLUSTER_ID_ON_OFF;
+            int got = sscanf(p, "%x,%u,%x,%x", &addr, &src_ep, &dst, &cluster);
+            if (got < 2) {
+                return AT_R("+ERROR: Use AT+ZBBIND=<short hex>,<endpoint>[,<target short hex>], e.g. AT+ZBBIND=74C5,1,181F");
+            }
+            // the IEEE addresses come from our neighbour table
             Neighbor nbrs[16];
             size_t n = get_neighbors(nbrs, 16);
-            bool found = false;
+            bool found = false, found_dst = false;
             esp_zb_zdo_bind_req_param_t req;
             memset(&req, 0, sizeof(req));
             for (size_t i = 0; i < n; i++) {
                 if (nbrs[i].short_addr == (uint16_t)addr) {
                     memcpy(req.src_address, nbrs[i].ieee_addr, 8);
                     found = true;
-                    break;
+                }
+                if (got >= 3 && dst != ZB_COORDINATOR_SHORT_ADDR && nbrs[i].short_addr == (uint16_t)dst) {
+                    memcpy(req.dst_address_u.addr_long, nbrs[i].ieee_addr, 8);
+                    found_dst = true;
                 }
             }
             if (!found) {
                 return AT_R("+ERROR: That device is not on our network (see AT+ZBNEIGHBORS?)");
             }
-            esp_zb_ieee_addr_t my_ieee;
-            esp_zb_get_long_address(my_ieee);
+            if (got >= 3 && dst != ZB_COORDINATOR_SHORT_ADDR && !found_dst) {
+                return AT_R("+ERROR: The target device is not on our network (see AT+ZBNEIGHBORS?)");
+            }
+            if (got < 3 || dst == ZB_COORDINATOR_SHORT_ADDR) {
+                esp_zb_get_long_address(req.dst_address_u.addr_long);
+                dst = ZB_COORDINATOR_SHORT_ADDR;
+            }
             req.src_endp = (uint8_t)src_ep;
-            req.cluster_id = ESP_ZB_ZCL_CLUSTER_ID_ON_OFF;
+            req.cluster_id = (uint16_t)cluster;
             req.dst_addr_mode = ESP_ZB_ZDO_BIND_DST_ADDR_MODE_64_BIT_EXTENDED;
-            memcpy(req.dst_address_u.addr_long, my_ieee, 8);
             req.dst_endp = ZB_LIGHT_ENDPOINT;
             req.req_dst_addr = (uint16_t)addr;
             // loop() sends it now and keeps resending until the device answers
             bind_req = req;
             bind_target = (uint16_t)addr;
+            bind_dst = (uint16_t)dst;
             bind_pending = true;
             bind_send_now = true;
             bind_started = millis();
@@ -934,7 +1009,7 @@ namespace ZIGBEE {
             if (*p != '0' && *p != '1') {
                 return AT_R("+ERROR: Use AT+ZBLIGHT=1 to switch on, AT+ZBLIGHT=0 to switch off");
             }
-            zbLight.setLight(*p == '1');
+            zbLight.setLightState(*p == '1');
             return AT_R("OK");
         }
         else if (p = COMMON::at_cmd_check("AT+ZBLIGHT?", at_cmd, cmd_len)) {
@@ -1005,7 +1080,11 @@ Zigbee AT Commands:
   AT+ZBNEIGHBORS?     - List the neighbour table (devices on our network)
   AT+ZBINFO?          - Our network: PAN ID, channel, address, permit-join left
   AT+ZBEPS=<short>    - Ask a device for its endpoints and clusters (read with AT+ZBEPS?)
-  AT+ZBBIND=<short>,<ep> - Bind the device's On/Off client on <ep> to our light
+  AT+ZBBIND=<short>,<ep>[,<target>[,<cluster>]] - Bind the device's client cluster
+                        on <ep> (default On/Off, 0006) to the light of <target>
+                        (default: our own light)
+  AT+ZBUNBIND=...     - Same arguments as AT+ZBBIND, removes that binding
+  AT+ZBRELAY=<short>  - Forward our light's on/off and level to <short> (0 stops)
   AT+ZBREAD=<short>,<ep> - Read a thermostat valve's room temperature and setpoint
   AT+ZBSETPOINT=<short>,<ep>,<C> - Set a thermostat valve's heating setpoint (5-30 C)
   AT+ZBVALVE?         - Last values read from the valve
@@ -1021,6 +1100,8 @@ Zigbee AT Commands:
 )EOF";
     }
 }
+
+extern uint8_t led_rgb_scale;   // defined in esp-at.ino, at file scope
 
 namespace PLUGINS {
     void initialize() {
@@ -1038,9 +1119,12 @@ namespace PLUGINS {
     int led_idle_color() {
         // Show the Zigbee light state while nothing else needs the LED
         if(ZIGBEE::light_on) {
+            // dimmed light: the LED gets dimmer, from 25% at the lowest level to full
+            led_rgb_scale = 64 + (191 * ZIGBEE::light_level) / 254;
             // orange, not green: against the dim blue idle glow green is hard to tell apart
             return LED_RGB_ORANGE;
         }
+        led_rgb_scale = 255;   // light off: full brightness again
 #if defined(ZIGBEE_MODE_ED)
         // The end device is the board with the button: purple, so the two
         // boards are easy to tell apart. The coordinator keeps the dim blue.
