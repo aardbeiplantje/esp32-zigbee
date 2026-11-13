@@ -126,7 +126,7 @@ namespace ZIGBEE {
     #define ZB_COORDINATOR_SHORT_ADDR 0x0000
     #define ZB_LIGHT_ENDPOINT 3
     // the channel the coordinator forms its network on
-    #define ZB_NETWORK_CHANNEL 13
+    #define ZB_NETWORK_CHANNEL 20
     // esp_zb_bdb_open_network() takes a uint8_t number of seconds
     #define ZB_PERMIT_JOIN_MAX_SEC 254
 
@@ -259,9 +259,18 @@ namespace ZIGBEE {
 #endif
         LOG("[ZIGBEE] About to call Zigbee.begin() with role=%d  (ZIGBEE_COORDINATOR=%d, ZIGBEE_END_DEVICE=%d)", role, ZIGBEE_COORDINATOR, ZIGBEE_END_DEVICE);
         // One channel only, on both boards: the coordinator forms the network on it,
-        // and the end device scans only it (13 is not in the default channel set).
+        // and the end device scans only it. 20 is a primary channel (11, 15, 20, 25), the set
+        // Hue bulbs look at first; 13 is not in it.
         Zigbee.setPrimaryChannelMask(1UL << ZB_NETWORK_CHANNEL);
-        if(!Zigbee.begin(role)) {
+#if defined(ZIGBEE_MODE_ZCZR)
+        // Install-code policy: a device can join with the key from its install code (AT+ZBIC=)
+        esp_zb_cfg_t zb_cfg = ZIGBEE_DEFAULT_COORDINATOR_CONFIG();
+        zb_cfg.install_code_policy = true;
+        bool zb_started = Zigbee.begin(&zb_cfg, false);
+#else
+        bool zb_started = Zigbee.begin(role);
+#endif
+        if(!zb_started) {
             LOG("[ZIGBEE] Failed to initialize Zigbee stack");
             return;
         }
@@ -876,6 +885,54 @@ namespace ZIGBEE {
             }
             probe_report[probe_len] = 0;
             return probe_report;
+        }
+        // AT+ZBIC=<ieee>,<install code> - Register a device's install code, so it can join with
+        // the key derived from it. <ieee> is the 16 hex digits printed on the device (MSB first),
+        // <install code> the 36 hex digits from the label (16 bytes + 2 bytes CRC). The install
+        // code is never logged, and the call must come before the device joins.
+        else if (p = COMMON::at_cmd_check("AT+ZBIC=", at_cmd, cmd_len)) {
+            size_t n = strcspn(p, "\r\n");
+            if (n != 16 + 1 + 36 || p[16] != ',') {
+                return AT_R("+ERROR: Use AT+ZBIC=<16 hex ieee>,<36 hex install code>");
+            }
+            esp_zb_ieee_addr_t ieee;
+            for (int i = 0; i < 8; i++) {
+                char byte[3] = { p[2 * i], p[2 * i + 1], 0 };
+                char *end = NULL;
+                unsigned long v = strtoul(byte, &end, 16);
+                if (end == byte || *end != 0) {
+                    return AT_R("+ERROR: The ieee address is not hex");
+                }
+                ieee[7 - i] = (uint8_t)v;   // the stack keeps the address least significant byte first
+            }
+            char ic[37];
+            memcpy(ic, p + 17, 36);
+            ic[36] = 0;
+            for (int i = 0; i < 36; i++) {
+                if (!isxdigit((unsigned char)ic[i])) {
+                    memset(ic, 0, sizeof(ic));
+                    return AT_R("+ERROR: The install code is not hex");
+                }
+            }
+            if (!esp_zb_lock_acquire(pdMS_TO_TICKS(1000))) {
+                memset(ic, 0, sizeof(ic));
+                return AT_R("+ERROR: Could not take the Zigbee lock");
+            }
+#if defined(ZIGBEE_MODE_ZCZR)
+            esp_err_t err = esp_zb_secur_ic_str_add(ieee, ic);
+            esp_zb_lock_release();
+#else
+            // only the coordinator is a trust center, so only it can hold install codes
+            esp_err_t err = ESP_ERR_NOT_SUPPORTED;
+            esp_zb_lock_release();
+#endif
+            memset(ic, 0, sizeof(ic));
+            if (err != ESP_OK) {
+                LOG("[ZIGBEE] Install code for %.16s rejected (error %d)", p, (int)err);
+                return AT_R("+ERROR: The install code was rejected");
+            }
+            LOG("[ZIGBEE] Install code added for device %.16s", p);
+            return AT_R("OK");
         }
         // AT+ZBRELAY=<short> - Forward our light's on/off and level to <short> (0 to stop)
         else if (p = COMMON::at_cmd_check("AT+ZBRELAY=", at_cmd, cmd_len)) {
