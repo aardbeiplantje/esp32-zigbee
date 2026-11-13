@@ -117,6 +117,12 @@ Steps that worked:
    The log shows `Bind OK` when it works.
 6. Press ON and OFF on the remote. The log shows `Light switched ON/OFF`, and the
    coordinator's LED is orange while the light is on, dim blue when it is off.
+7. Relay to an end device: `AT+ZBRELAY=<short>` (for example `AT+ZBRELAY=A50B`) makes
+   the coordinator forward every on/off and level change from the remote to that
+   device, so the remote can drive the end device without binding to it. `AT+ZBRELAY=0`
+   stops the relay. The target is lost on reboot, so set it again after a restart.
+   Tested: the coordinator's and the end device's LEDs both follow HIGH and LOW.
+   The `<` and `>` buttons send no On/Off or Level commands we can see.
 
 Things that caught us out:
 
