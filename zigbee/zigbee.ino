@@ -100,6 +100,7 @@ namespace ZIGBEE {
 
     // defined below, used by loop()
     size_t count_children();
+    void log_children();
 
     // Join mode, for the LED: children when the window opened, and whether one joined since
     static size_t join_children_at_open = 0;
@@ -125,7 +126,7 @@ namespace ZIGBEE {
     #define ZB_COORDINATOR_SHORT_ADDR 0x0000
     #define ZB_LIGHT_ENDPOINT 3
     // the channel the coordinator forms its network on
-    #define ZB_NETWORK_CHANNEL 15
+    #define ZB_NETWORK_CHANNEL 13
     // esp_zb_bdb_open_network() takes a uint8_t number of seconds
     #define ZB_PERMIT_JOIN_MAX_SEC 254
 
@@ -534,6 +535,7 @@ namespace ZIGBEE {
                 if (n > join_children_at_open) {
                     join_device_joined = true;
                     LOG("[ZIGBEE] *** A device joined *** %d devices on the network", n);
+                    log_children();
                 }
             }
             // Log every 10 seconds (only when 10+ seconds have passed since last log)
@@ -690,6 +692,21 @@ namespace ZIGBEE {
                || nbrs[i].relationship == ESP_ZB_NWK_RELATIONSHIP_UNAUTHENTICATED_CHILD)
                 c++;
         return c;
+    }
+
+    // Print each child with its IEEE and short address
+    void log_children() {
+        Neighbor nbrs[16];
+        size_t n = get_neighbors(nbrs, 16);
+        for(size_t i = 0; i < n; i++) {
+            if(nbrs[i].relationship != ESP_ZB_NWK_RELATIONSHIP_CHILD
+               && nbrs[i].relationship != ESP_ZB_NWK_RELATIONSHIP_UNAUTHENTICATED_CHILD)
+                continue;
+            LOG("[ZIGBEE]   child IEEE=%02X:%02X:%02X:%02X:%02X:%02X:%02X:%02X Short=0x%04X",
+                nbrs[i].ieee_addr[7], nbrs[i].ieee_addr[6], nbrs[i].ieee_addr[5], nbrs[i].ieee_addr[4],
+                nbrs[i].ieee_addr[3], nbrs[i].ieee_addr[2], nbrs[i].ieee_addr[1], nbrs[i].ieee_addr[0],
+                nbrs[i].short_addr);
+        }
     }
 
     // Append "+<prefix>:..." lines for the neighbour table, returns the new offset

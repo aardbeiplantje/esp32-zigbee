@@ -145,9 +145,27 @@ Background reading:
 
 ### Sonoff TRVZB (radiator valve)
 
-A thermostatic radiator valve with a built-in temperature sensor. Not yet
-supported by the firmware; the coordinator's thermostat endpoint is a client,
-so the valve is controlled by reading and writing its thermostat cluster directly.
+A thermostatic radiator valve with a built-in temperature sensor. The coordinator
+reads and writes its thermostat cluster (0x0201) on endpoint 1 directly.
+
+**Works (tested on channel 13):**
+- Joining: hold BOOT on the coordinator for 5 s (magenta), then put the valve in
+  pairing mode: Auto off, dial to `OF`, hold the middle button for 3 s until the
+  signal icon flashes. The log shows `A device joined`, and `AT+ZBLIST?` lists it.
+- `AT+ZBEPS=<short>` then `AT+ZBEPS?`: endpoints and clusters.
+- `AT+ZBREAD=<short>,<ep>`: room temperature and setpoint. The valve only answers
+  while awake, so press a button on it and retry.
+- `AT+ZBSETPOINT=<short>,<ep>,<C>` (5-30 °C): tested 19 → 21 → 19 °C.
+- `AT+ZBVALVE?`: the last values read.
+
+**Not supported yet:**
+- Driving the valve opening directly. Zigbee2MQTT exposes `valveOpeningDegree` and
+  `valveClosingDegree` as manufacturer attributes, but we haven't found their IDs.
+  Manufacturer clusters `0xFC11` and `0xFC57` both appear on endpoint 1.
+- Heat demand for the boiler (the thermostat's running state): not checked.
+- Pairing on channel 15: the valve never joined there in our tests.
+- Reads and writes need the valve awake. The firmware retries each one every 6 s
+  for up to 120 s.
 
 - Product: [Sonoff Zigbee thermostatic radiator valve](https://sonoff.tech/en-eu/products/sonoff-zigbee-thermostatic-radiator-valve)
 - Zigbee2MQTT: [TRVZB](https://zigbee2mqtt.io/devices/TRVZB.html) (setpoint and local temperature attributes)
