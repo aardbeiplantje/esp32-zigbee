@@ -5964,6 +5964,12 @@ int determine_led_state() {
   bool is_wifi_connected = (WiFi.status() == WL_CONNECTED);
   #endif // SUPPORT_WIFI
 
+  #ifdef SUPPORT_PLUGINS
+  // A plugin state that outranks BLE, e.g. Zigbee join mode
+  int plugin_interval = 0;
+  int plugin_color = PLUGINS::led_status ? PLUGINS::led_status(&plugin_interval) : -1;
+  #endif // SUPPORT_PLUGINS
+
   // Determine LED behavior based on priority (highest to lowest):
   if (comm_active) {
     // Data transmission: tiny flicker on top of current state
@@ -5976,6 +5982,13 @@ int determine_led_state() {
       led_brightness_off = LED_BRIGHTNESS_MEDIUM; // Return to steady connected state
     }
     #endif // SUPPORT_WIFI
+  #ifdef SUPPORT_PLUGINS
+  } else if (plugin_color >= 0) {
+    led_interval = plugin_interval;
+    led_brightness_on = LED_BRIGHTNESS_HIGH;
+    led_brightness_off = plugin_interval ? LED_BRIGHTNESS_LOW : LED_BRIGHTNESS_HIGH;
+    led_rgb_color = (uint8_t)plugin_color;
+  #endif // SUPPORT_PLUGINS
   #if defined(SUPPORT_BLE_UART1) || defined(BLUETOOTH_UART_AT)
   } else if ((ble_advertising_start != 0) && !(deviceConnected == 1)) {
     // BLE advertising (button pressed, waiting for connection): fast blink
@@ -6111,6 +6124,7 @@ void setup_gpio() {
 #define BUTTON_NORMAL_PRESS_MS  120
 #define BUTTON_LONG_PRESS_1_MS 2000
 #define BUTTON_LONG_PRESS_2_MS 5000
+#define BUTTON_HOLD_BLE_MS     1000  // with a plugin hold action: BLE starts while still held
 
 // Button configuration
 unsigned long press_start = 0;
@@ -6157,6 +6171,28 @@ void determine_button_state() {
     #endif // LED
     return;
   }
+  #if defined(SUPPORT_PLUGINS) && (defined(SUPPORT_BLE_UART1) || defined(BLUETOOTH_UART_AT))
+  // A plugin takes the 5 s hold (Zigbee join mode). While the button is held:
+  // after 1 s BLE starts advertising, as a normal press would; held on to 5 s,
+  // BLE stops and the plugin's hold action runs. Released in between, BLE stays.
+  if(last_button_state && PLUGINS::button_hold_5s) {
+    if(button_action == 1 && press_duration >= BUTTON_HOLD_BLE_MS) {
+      button_action = 2;
+      if(ble_advertising_start == 0) {
+        LOG("[BUTTON] Held %lu ms: BLE advertising started, keep holding for join mode", press_duration);
+        start_advertising_ble();
+      }
+    } else if(button_action == 2 && press_duration >= BUTTON_LONG_PRESS_2_MS) {
+      button_action = 3;
+      if(ble_advertising_start != 0) {
+        stop_advertising_ble();
+      }
+      LOG("[BUTTON] Held %lu ms: handing the hold to the plugin", press_duration);
+      PLUGINS::button_hold_5s();
+    }
+    return;
+  }
+  #endif
   if(!last_button_state && button_action == 1) {
     button_action = 0;
     // Button released, use the timed duration to decide action

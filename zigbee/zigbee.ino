@@ -49,6 +49,43 @@ zigbee_role_t role = ZIGBEE_COORDINATOR;  // Confusing but COORDINATOR=0 in Ardu
 zigbee_role_t role = ZIGBEE_END_DEVICE;  // Confusing but END_DEVICE=2 in Arduino lib
 #endif
 
+// Our thermostat endpoint. ZigbeeThermostat only handles temperature-measurement
+// reads; a valve's answers come on its thermostat cluster (0x0201), handled here.
+class CoordinatorThermostat : public ZigbeeThermostat {
+public:
+    using ZigbeeThermostat::ZigbeeThermostat;
+    bool answered = false;          // the valve answered our last read or write
+    float local_temp = NAN;         // the valve's own temperature reading, deg C
+    float setpoint = NAN;           // the valve's heating setpoint, deg C
+    uint8_t write_status = 0xFF;    // status of the last write, 0x00 = success
+
+    void zbAttributeRead(uint16_t cluster_id, const esp_zb_zcl_attribute_t *attribute, uint8_t src_endpoint, esp_zb_zcl_addr_t src_address) override {
+        if(cluster_id != ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT || !attribute->data.value)
+            return;
+        if(attribute->data.type != ESP_ZB_ZCL_ATTR_TYPE_S16)
+            return;
+        float c = *(int16_t *)attribute->data.value / 100.0f;   // thermostat values are in 0.01 deg C
+        if(attribute->id == ESP_ZB_ZCL_ATTR_THERMOSTAT_LOCAL_TEMPERATURE_ID) {
+            local_temp = c;
+        } else if(attribute->id == ESP_ZB_ZCL_ATTR_THERMOSTAT_OCCUPIED_HEATING_SETPOINT_ID) {
+            setpoint = c;
+        } else {
+            return;
+        }
+        answered = true;
+        LOG("[VALVE] 0x%04X: %s = %.2f C", src_address.u.short_addr,
+            attribute->id == ESP_ZB_ZCL_ATTR_THERMOSTAT_LOCAL_TEMPERATURE_ID ? "room temperature" : "setpoint", c);
+    }
+
+    void zbWriteAttributeResponse(uint16_t cluster_id, uint16_t attribute_id, esp_zb_zcl_status_t status, uint8_t src_endpoint, esp_zb_zcl_addr_t src_address) override {
+        if(cluster_id != ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT)
+            return;
+        write_status = status;
+        answered = true;
+        LOG("[VALVE] 0x%04X: write of attribute 0x%04X status 0x%02X", src_address.u.short_addr, attribute_id, status);
+    }
+};
+
 namespace ZIGBEE {
     // Plain RAM, not RTC: these are millis()-based or per-session state, and
     // RTC memory survives software resets while millis() restarts at zero.
@@ -59,15 +96,36 @@ namespace ZIGBEE {
     ZigbeeGateway zbGw = ZigbeeGateway(1);
     ZigbeeSwitch zbSwitch = ZigbeeSwitch(2);
     ZigbeeLight zbLight = ZigbeeLight(3);
-    ZigbeeThermostat zbThermostat = ZigbeeThermostat(4);
+    CoordinatorThermostat zbThermostat = CoordinatorThermostat(4);
 
     // defined below, used by loop()
     size_t count_children();
+
+    // Join mode, for the LED: children when the window opened, and whether one joined since
+    static size_t join_children_at_open = 0;
+    static bool join_device_joined = false;
+
+    void open_join_window(int timeout_sec) {
+        LOG("[ZIGBEE] Enabling permit joining for %d seconds", timeout_sec);
+        LOG("[ZIGBEE] *** PERMIT JOINING ENABLED - Put your devices in pairing mode NOW ***");
+        join_children_at_open = count_children();
+        join_device_joined = false;
+        permit_join_end_time = millis() + (timeout_sec * 1000);
+        last_permit_join_log_time = 0;  // Reset to log immediately
+        Zigbee.openNetwork((uint8_t)timeout_sec);
+        LOG("[ZIGBEE] openNetwork(%d) called, waiting for join attempts...", timeout_sec);
+    }
+
+    bool join_window_open() {
+        return permit_join_end_time > 0 && millis() < permit_join_end_time;
+    }
     static bool zcl_raw_seen(uint8_t bufid);   // defined below, registered in init()
 
     // The coordinator is always short address 0x0000; our light is endpoint 3.
     #define ZB_COORDINATOR_SHORT_ADDR 0x0000
     #define ZB_LIGHT_ENDPOINT 3
+    // the channel the coordinator forms its network on
+    #define ZB_NETWORK_CHANNEL 15
     // esp_zb_bdb_open_network() takes a uint8_t number of seconds
     #define ZB_PERMIT_JOIN_MAX_SEC 254
 
@@ -185,6 +243,11 @@ namespace ZIGBEE {
         Zigbee.setRebootOpenNetwork(180);
 #endif
         LOG("[ZIGBEE] About to call Zigbee.begin() with role=%d  (ZIGBEE_COORDINATOR=%d, ZIGBEE_END_DEVICE=%d)", role, ZIGBEE_COORDINATOR, ZIGBEE_END_DEVICE);
+#if !defined(ZIGBEE_MODE_ED)
+        // Form the network on one channel only. Channel 15 is one of the usual
+        // defaults that devices like the TRVZB scan first.
+        Zigbee.setPrimaryChannelMask(1UL << ZB_NETWORK_CHANNEL);
+#endif
         if(!Zigbee.begin(role)) {
             LOG("[ZIGBEE] Failed to initialize Zigbee stack");
             return;
@@ -344,8 +407,78 @@ namespace ZIGBEE {
         }
     }
 
+    // ---- Thermostat valve (read and write its thermostat cluster) -------
+    // The valve sleeps like the STYRBAR, so a request is resent every
+    // BIND_RETRY_MS until the valve answers, or BIND_GIVE_UP_MS has passed.
+    enum valve_op_t { VALVE_NONE, VALVE_READ, VALVE_WRITE };
+    static valve_op_t valve_op = VALVE_NONE;
+    static uint16_t valve_addr = 0;
+    static uint8_t valve_ep = 1;
+    static int16_t valve_write_value = 0;   // 0.01 deg C units
+    static bool valve_send_now = false;
+    static unsigned long valve_next_send = 0;
+    static unsigned long valve_started = 0;
+
+    static void valve_send() {
+        if(!esp_zb_lock_acquire(pdMS_TO_TICKS(1000)))
+            return;
+        if(valve_op == VALVE_READ) {
+            static uint16_t attrs[2] = { ESP_ZB_ZCL_ATTR_THERMOSTAT_LOCAL_TEMPERATURE_ID,
+                                         ESP_ZB_ZCL_ATTR_THERMOSTAT_OCCUPIED_HEATING_SETPOINT_ID };
+            esp_zb_zcl_read_attr_cmd_t cmd;
+            memset(&cmd, 0, sizeof(cmd));
+            cmd.zcl_basic_cmd.src_endpoint = zbThermostat.getEndpoint();
+            cmd.zcl_basic_cmd.dst_endpoint = valve_ep;
+            cmd.zcl_basic_cmd.dst_addr_u.addr_short = valve_addr;
+            cmd.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
+            cmd.clusterID = ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT;
+            cmd.attr_number = 2;
+            cmd.attr_field = attrs;
+            esp_zb_zcl_read_attr_cmd_req(&cmd);
+        } else if(valve_op == VALVE_WRITE) {
+            esp_zb_zcl_attribute_t attr;
+            memset(&attr, 0, sizeof(attr));
+            attr.id = ESP_ZB_ZCL_ATTR_THERMOSTAT_OCCUPIED_HEATING_SETPOINT_ID;
+            attr.data.type = ESP_ZB_ZCL_ATTR_TYPE_S16;
+            attr.data.size = sizeof(valve_write_value);
+            attr.data.value = &valve_write_value;
+            esp_zb_zcl_write_attr_cmd_t cmd;
+            memset(&cmd, 0, sizeof(cmd));
+            cmd.zcl_basic_cmd.src_endpoint = zbThermostat.getEndpoint();
+            cmd.zcl_basic_cmd.dst_endpoint = valve_ep;
+            cmd.zcl_basic_cmd.dst_addr_u.addr_short = valve_addr;
+            cmd.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
+            cmd.clusterID = ESP_ZB_ZCL_CLUSTER_ID_THERMOSTAT;
+            cmd.attr_number = 1;
+            cmd.attr_field = &attr;
+            esp_zb_zcl_write_attr_cmd_req(&cmd);
+        }
+        esp_zb_lock_release();
+    }
+
+    static void valve_service() {
+        if(valve_op == VALVE_NONE)
+            return;
+        unsigned long now = millis();
+        if(zbThermostat.answered) {
+            valve_op = VALVE_NONE;
+            return;
+        }
+        if(now - valve_started > BIND_GIVE_UP_MS) {
+            LOG("[VALVE] No answer from 0x%04X after %d s, giving up", valve_addr, BIND_GIVE_UP_MS / 1000);
+            valve_op = VALVE_NONE;
+            return;
+        }
+        if(valve_send_now || now >= valve_next_send) {
+            valve_send_now = false;
+            valve_next_send = now + BIND_RETRY_MS;
+            valve_send();
+        }
+    }
+
     void loop() {
         probe_service();
+        valve_service();
 #if defined(ZIGBEE_MODE_ED)
         // log each change of the join state (the stack joins in the background)
         static int8_t last_connected = -1;
@@ -393,6 +526,16 @@ namespace ZIGBEE {
         if (permit_join_end_time > 0 && millis() < permit_join_end_time) {
             unsigned long now = millis();
             unsigned long remaining = (permit_join_end_time - now) / 1000;
+            // A new child in the neighbour table: the LED goes steady (checked twice a second)
+            static unsigned long last_join_check = 0;
+            if (!join_device_joined && now - last_join_check >= 500) {
+                last_join_check = now;
+                size_t n = count_children();
+                if (n > join_children_at_open) {
+                    join_device_joined = true;
+                    LOG("[ZIGBEE] *** A device joined *** %d devices on the network", n);
+                }
+            }
             // Log every 10 seconds (only when 10+ seconds have passed since last log)
             if (now - last_permit_join_log_time >= 10000) {
                 LOG("[ZIGBEE] *** Permit Joining Active *** %lu seconds remaining, %d devices on the network", remaining, count_children());
@@ -707,6 +850,51 @@ namespace ZIGBEE {
                 (uint16_t)addr, src_ep, ZB_LIGHT_ENDPOINT, BIND_GIVE_UP_MS / 1000);
             return response;
         }
+        // AT+ZBREAD=<short>,<ep> - Read the valve's room temperature and setpoint
+        else if (p = COMMON::at_cmd_check("AT+ZBREAD=", at_cmd, cmd_len)) {
+            unsigned int addr = 0, ep = 0;
+            if (sscanf(p, "%x,%u", &addr, &ep) != 2 || ep == 0 || ep > 240) {
+                return AT_R("+ERROR: Use AT+ZBREAD=<short hex>,<endpoint>, e.g. AT+ZBREAD=74C5,1");
+            }
+            valve_op = VALVE_READ;
+            valve_addr = (uint16_t)addr;
+            valve_ep = (uint8_t)ep;
+            valve_send_now = true;
+            valve_started = millis();
+            zbThermostat.answered = false;
+            snprintf(response, sizeof(response), "+ZBREAD:requested from 0x%04X endpoint %u, read it with AT+ZBVALVE?\r\nOK",
+                     valve_addr, valve_ep);
+            return response;
+        }
+        // AT+ZBSETPOINT=<short>,<ep>,<C> - Write the valve's heating setpoint
+        else if (p = COMMON::at_cmd_check("AT+ZBSETPOINT=", at_cmd, cmd_len)) {
+            unsigned int addr = 0, ep = 0;
+            float c = 0;
+            if (sscanf(p, "%x,%u,%f", &addr, &ep, &c) != 3 || ep == 0 || ep > 240) {
+                return AT_R("+ERROR: Use AT+ZBSETPOINT=<short hex>,<endpoint>,<deg C>, e.g. AT+ZBSETPOINT=74C5,1,21");
+            }
+            if (c < 5.0f || c > 30.0f) {
+                return AT_R("+ERROR: Setpoint must be between 5 and 30 deg C");
+            }
+            valve_op = VALVE_WRITE;
+            valve_addr = (uint16_t)addr;
+            valve_ep = (uint8_t)ep;
+            valve_write_value = (int16_t)lroundf(c * 100.0f);
+            valve_send_now = true;
+            valve_started = millis();
+            zbThermostat.answered = false;
+            snprintf(response, sizeof(response), "+ZBSETPOINT:sending %.2f C to 0x%04X endpoint %u, watch the log for the write status\r\nOK",
+                     c, valve_addr, valve_ep);
+            return response;
+        }
+        // AT+ZBVALVE? - Last values read from the valve
+        else if (p = COMMON::at_cmd_check("AT+ZBVALVE?", at_cmd, cmd_len)) {
+            snprintf(response, sizeof(response), "+ZBVALVE:room=%s,setpoint=%s,answered=%s",
+                     isnan(zbThermostat.local_temp) ? "unknown" : String(zbThermostat.local_temp, 2).c_str(),
+                     isnan(zbThermostat.setpoint) ? "unknown" : String(zbThermostat.setpoint, 2).c_str(),
+                     zbThermostat.answered ? "yes" : "no");
+            return response;
+        }
         // AT+ZBTOGGLE[=<short_addr>] - Toggle a light, the same as a long button press
         else if (p = COMMON::at_cmd_check("AT+ZBTOGGLE=", at_cmd, cmd_len)) {
             unsigned int short_addr = 0;
@@ -750,12 +938,7 @@ namespace ZIGBEE {
                         LOG("[ZIGBEE] Permit join time %d capped to %d seconds", timeout_sec, ZB_PERMIT_JOIN_MAX_SEC);
                         timeout_sec = ZB_PERMIT_JOIN_MAX_SEC;
                     }
-                    LOG("[ZIGBEE] Enabling permit joining for %d seconds", timeout_sec);
-                    LOG("[ZIGBEE] *** PERMIT JOINING ENABLED - Put your devices in pairing mode NOW ***");
-                    permit_join_end_time = millis() + (timeout_sec * 1000);
-                    last_permit_join_log_time = 0;  // Reset to log immediately
-                    Zigbee.openNetwork((uint8_t)timeout_sec);
-                    LOG("[ZIGBEE] openNetwork(%d) called, waiting for join attempts...", timeout_sec);
+                    open_join_window(timeout_sec);
                     snprintf(response, sizeof(response), "+ZBJOIN:permit_join_enabled,%d\r\nOK", timeout_sec);
                 } else {
                     LOG("[ZIGBEE] Disabling permit joining");
@@ -806,8 +989,11 @@ Zigbee AT Commands:
   AT+ZBINFO?          - Our network: PAN ID, channel, address, permit-join left
   AT+ZBEPS=<short>    - Ask a device for its endpoints and clusters (read with AT+ZBEPS?)
   AT+ZBBIND=<short>,<ep> - Bind the device's On/Off client on <ep> to our light
-  AT+ZBTOGGLE         - Toggle a light, as a long (2-5 s) button press does:
-                        on an end device the coordinator's, else our own
+  AT+ZBREAD=<short>,<ep> - Read a thermostat valve's room temperature and setpoint
+  AT+ZBSETPOINT=<short>,<ep>,<C> - Set a thermostat valve's heating setpoint (5-30 C)
+  AT+ZBVALVE?         - Last values read from the valve
+  AT+ZBTOGGLE         - Toggle a light: on an end device the coordinator's (as
+                        a 2-5 s button press there does), else our own
   AT+ZBTOGGLE=<short> - Toggle the light on the device with that short address
   AT+ZBLIGHT=<0|1>    - Switch our own light endpoint on or off
   AT+ZBLIGHT?         - Get our own light state
@@ -850,4 +1036,18 @@ namespace PLUGINS {
         // Toggle the light on the coordinator (on the coordinator itself, our own)
         ZIGBEE::button_toggle_light();
     }
+    int led_status(int *interval_ms) {
+        // Join mode: magenta, blinking while we wait, steady once a device joined
+        if(!ZIGBEE::join_window_open())
+            return -1;
+        *interval_ms = ZIGBEE::join_device_joined ? 0 : 250;
+        return LED_RGB_MAGENTA;
+    }
+#if !defined(ZIGBEE_MODE_ED)
+    void button_hold_5s() {
+        // BOOT held for 5 s on the coordinator: open the network for joining
+        LOG("[ZIGBEE] Button held 5 s: join mode");
+        ZIGBEE::open_join_window(ZB_PERMIT_JOIN_MAX_SEC);
+    }
+#endif
 }

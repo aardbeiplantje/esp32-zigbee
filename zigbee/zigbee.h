@@ -78,6 +78,7 @@ namespace PLUGINS {
     const char * at_get_help_string();
     int led_idle_color();
     void button_long_press();
+    int led_status(int *interval_ms);
 }
 
 namespace ZIGBEE {

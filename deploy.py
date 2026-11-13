@@ -332,7 +332,11 @@ def build(board, flags, args):
            "--jobs", "16"]
     for k, v in build_properties(flags).items():
         cmd += ["--build-property", f"{k}={v}"]
-    for opt in chip["board_options"] + (f"ZigbeeMode={chip['zigbee_mode'][board['role']]}",):
+    extra = (f"ZigbeeMode={chip['zigbee_mode'][board['role']]}",)
+    # DEBUG_LEVEL=verbose (or debug/info/warn/error) turns on the core's log_x output.
+    if os.environ.get("DEBUG_LEVEL"):
+        extra += (f"DebugLevel={os.environ['DEBUG_LEVEL']}",)
+    for opt in chip["board_options"] + extra:
         cmd += ["--board-options", opt]
     cmd.append(os.path.join(HERE, sketch))
     if args.verbose:

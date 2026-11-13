@@ -56,6 +56,13 @@ namespace PLUGINS {
     int led_idle_color() __attribute__((weak));
     // A long press (2-5 s) on the button that nothing else handled
     void button_long_press() __attribute__((weak));
+    // The button has been held for 5 s (called while it is still held). With
+    // this hook, holding the button first starts BLE (after 1 s), then at 5 s
+    // stops BLE and calls it. Without it, a 5 s press keeps its old meaning.
+    void button_hold_5s() __attribute__((weak));
+    // A state that outranks BLE on the LED: return an LED_RGB_* color and set
+    // *interval_ms (0 = steady), or return < 0 to leave the LED alone.
+    int led_status(int *interval_ms) __attribute__((weak));
 }
 
 #endif // _PLUGINS_H
