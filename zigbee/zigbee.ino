@@ -270,9 +270,11 @@ namespace ZIGBEE {
         // Hue bulbs look at first; 13 is not in it.
         Zigbee.setPrimaryChannelMask(1UL << ZB_NETWORK_CHANNEL);
 #if defined(ZIGBEE_MODE_ZCZR)
-        // Install-code policy: a device can join with the key from its install code (AT+ZBIC=)
+        // Install-code policy is off. With it on, the Sonoff valve (which joins without an install
+        // code) did not come back after a coordinator reboot; with it off it stays joined across
+        // reboots. AT+ZBIC= still stores install codes, but install-code joins are untested here.
         esp_zb_cfg_t zb_cfg = ZIGBEE_DEFAULT_COORDINATOR_CONFIG();
-        zb_cfg.install_code_policy = true;
+        zb_cfg.install_code_policy = false;
         bool zb_started = Zigbee.begin(&zb_cfg, false);
 #else
         bool zb_started = Zigbee.begin(role);
