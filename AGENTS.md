@@ -21,6 +21,8 @@
 - Two boards are connected: `coordinator` and `enddevice` (see `boards.toml`). Find their ports with `python3 deploy.py list`; opening a port resets that board unless DTR/RTS are left low.
 - A device that joined the network is in the stack's neighbour table, not in `getBoundDevices()`. `AT+ZBLIST?` reports both. An ESP32-H2's IEEE address is its base MAC with `FF:FE` in the middle.
 - The Zigbee storage lives in its own flash partition, so `AT+ERASE` does not clear a stored network. To make a board forget it, erase the flash (`esptool --chip esp32h2 -p <port> erase-flash`) and reflash.
+- Flash the coordinator over the PC's USB-C: `python3 deploy.py flash coordinator`. Flashing through the Pi's GPIO UART did not reach the chip's download mode: BOOT+RST, a timed connect window and power-on with BOOT held all got no reply at 115200 or 460800 baud.
+- The Raspberry Pi Zero W drives the coordinator's AT interface over its GPIO UART at `/dev/serial0`. Use that for AT commands only. The USB port carries the logs. Connect with a key via `ssh -i <public key> -o IdentitiesOnly=yes`, never `-A`.
 
 ## Test devices
 
