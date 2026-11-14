@@ -6415,6 +6415,12 @@ RTC_DATA_ATTR int boot_count = 0;
 
 INLINE
 void do_setup() {
+  // USB serial writes never wait: with a host that has the port open but is not reading,
+  // the default 100 ms wait per byte would stall the loop. Late bytes are dropped instead.
+  #if ARDUINO_USB_CDC_ON_BOOT && (UART_LOG_DEV_UART0 == 0)
+  USBSERIAL0.setTxTimeoutMs(0);
+  #endif
+
   // setup WTD
   setup_wtd();
 
