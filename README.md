@@ -73,7 +73,10 @@ the entry to paste into `boards.toml`.
 The AT commands also run over a UART on the board's header, so a Raspberry Pi can
 drive the coordinator without USB. The firmware uses UART1 on RX GPIO 23 and TX
 GPIO 24 (the TX and RX pads of the Super Mini), at 115200 baud, 8N1, 3.3 V logic.
-The USB port still works, and it stays the way to flash and read logs.
+Flash over USB-C only: `python3 deploy.py flash coordinator`. The Pi's UART did not
+reach the chip's download mode in our tests (BOOT+RST, a timed connect window and
+power-on with BOOT held all got no reply at 115200 or 460800 baud), so the Pi is for
+AT commands only. The USB port carries the logs.
 
 Wiring to the Pi Zero W's 40-pin header:
 
