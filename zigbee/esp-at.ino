@@ -238,6 +238,17 @@ ALIGN(4) char atscbu[128] = {""};
 SerialCommands ATSc(&USBSERIAL0, atscbu, sizeof(atscbu), "\r\n", "\r\n");
 #endif // UART_AT
 
+// AT commands over a GPIO UART, for a Raspberry Pi wired to the board: UART1, RX on GPIO 23,
+// TX on GPIO 24 (the variant's default TX/RX pins), 115200 8N1. Replies go back on the same port.
+#if defined(UART_AT) && defined(CONFIG_IDF_TARGET_ESP32H2)
+#define AT_UART1
+#define AT_UART1_RX_PIN 23
+#define AT_UART1_TX_PIN 24
+#define AT_UART1_BAUD   115200
+ALIGN(4) char atscbu1[128] = {""};
+SerialCommands ATSc1(&UART1, atscbu1, sizeof(atscbu1), "\r\n", "\r\n");
+#endif // AT_UART1
+
 #define CFGVERSION 0x02 // switch between 0x01/0x02/0x03 to reinit the config struct change
 #define CFGINIT    0x72 // at boot init check flag
 
@@ -6417,6 +6428,11 @@ void do_setup() {
   #ifdef UART_AT
   ATSc.SetDefaultHandler(&sc_cmd_handler);
   #endif
+  #ifdef AT_UART1
+  UART1.begin(AT_UART1_BAUD, SERIAL_8N1, AT_UART1_RX_PIN, AT_UART1_TX_PIN);
+  ATSc1.SetDefaultHandler(&sc_cmd_handler);
+  LOG("[AT] AT over UART1: %d baud, RX GPIO %d, TX GPIO %d", AT_UART1_BAUD, AT_UART1_RX_PIN, AT_UART1_TX_PIN);
+  #endif
 
   // BlueTooth SPP setup possible?
   #if defined(BLUETOOTH_UART_AT) || defined(SUPPORT_BLE_UART1)
@@ -7614,6 +7630,11 @@ void loop() {
   while(ATSc.GetSerial()->available() > 0)
     ATSc.ReadSerial();
   #endif
+  #ifdef AT_UART1
+  // Handle AT commands on the GPIO UART
+  while(ATSc1.GetSerial()->available() > 0)
+    ATSc1.ReadSerial();
+  #endif
 
   #ifdef SUPPORT_BLE_UART1
   // Check if BLE advertising should be stopped after timeout
@@ -7827,12 +7848,12 @@ void loop() {
   #ifdef LOOP_DELAY
   // Do delay at the end of the loop, for sleep/power save, this is "smart",
   // when not possible no sleep is done (connections, BLE, WPS,..)
-  #ifdef SUPPORT_UART1
+  #if defined(SUPPORT_UART1) || defined(AT_UART1)
   if(!UART1.available())
     do_loop_delay();
   #else
   do_loop_delay();
-  #endif // SUPPORT_UART1
+  #endif // SUPPORT_UART1 || AT_UART1
 
   // Handle button press AFTER
   determine_button_state();
