@@ -68,6 +68,48 @@ role = "COORDINATOR"
 To add a board, plug it in and run `python3 deploy.py identify <port>`. It prints
 the entry to paste into `boards.toml`.
 
+## Serial over GPIO (Raspberry Pi)
+
+The AT commands also run over a UART on the board's header, so a Raspberry Pi can
+drive the coordinator without USB. The firmware uses UART1 on RX GPIO 23 and TX
+GPIO 24 (the TX and RX pads of the Super Mini), at 115200 baud, 8N1, 3.3 V logic.
+The USB port still works, and it stays the way to flash and read logs.
+
+Wiring to the Pi Zero W's 40-pin header:
+
+| Pi | Board |
+|---|---|
+| Pin 8 (GPIO 14, TXD) | RX (GPIO 23) |
+| Pin 10 (GPIO 15, RXD) | TX (GPIO 24) |
+| Pin 6 (GND) | GND |
+
+Power the board from its own USB supply, or from the Pi's 5 V pin (pin 2 or 4)
+with its USB-C unplugged, so only one supply feeds it. Never connect the Pi's
+5 V pins to the board's 3V3 pad.
+
+Pi setup (Raspberry Pi OS):
+
+1. In `/boot/firmware/config.txt`, under `[all]`, set `enable_uart=1` and
+   `dtoverlay=miniuart-bt`. The mini UART keeps Bluetooth working; `disable-bt`
+   would turn Bluetooth off.
+2. In `/boot/firmware/cmdline.txt`, remove `console=serial0,115200` if it is there.
+   `sudo raspi-config nonint do_serial_cons 1` does the same, so the login shell
+   does not use the UART.
+3. Reboot. `ls -l /dev/serial0` should point to `ttyAMA0`, and
+   `systemctl is-active serial-getty@ttyAMA0` should print `inactive`.
+
+Send a command and read the reply. The user needs to be in the `dialout` group:
+
+```
+stty -F /dev/serial0 115200 cs8 -cstopb -parenb raw -echo
+(timeout 8 cat /dev/serial0 > /tmp/at_reply.txt &); sleep 1
+printf 'AT+ZBLIST?\r\n' > /dev/serial0; sleep 7; cat /tmp/at_reply.txt
+```
+
+Replies go back on the port the command came in on. Unsolicited log lines, such as
+joins or valve readings, stay on USB. To read a valve over the UART, send
+`AT+ZBREAD=<short>,1`, wait for the valve to answer, then send `AT+ZBVALVE?`.
+
 ## Two boards: a button and a light
 
 `boards.toml` holds a `COORDINATOR` and an `ENDDEVICE`. They run the same
