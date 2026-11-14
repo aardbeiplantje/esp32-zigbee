@@ -21,3 +21,9 @@
 - Two boards are connected: `coordinator` and `enddevice` (see `boards.toml`). Find their ports with `python3 deploy.py list`; opening a port resets that board unless DTR/RTS are left low.
 - A device that joined the network is in the stack's neighbour table, not in `getBoundDevices()`. `AT+ZBLIST?` reports both. An ESP32-H2's IEEE address is its base MAC with `FF:FE` in the middle.
 - The Zigbee storage lives in its own flash partition, so `AT+ERASE` does not clear a stored network. To make a board forget it, erase the flash (`esptool --chip esp32h2 -p <port> erase-flash`) and reflash.
+
+## Test devices
+
+- Sonoff TRVZB valves. IEEE addresses are fixed. Short addresses change when a valve rejoins, so read the current one from `AT+ZBLIST?` before `AT+ZBREAD=<short>,1`.
+  - Valve 1: IEEE `D4:48:67:FF:FE:0B:8E:D7`. Last short `0x2C26`; earlier joins gave `0x181F`. Its display and rotary dial misbehaved with fresh alkaline batteries.
+  - Valve 2: IEEE `D4:48:67:FF:FE:0B:CA:BF`. Joined as short `0xE9F1` on 2026-11-13.
